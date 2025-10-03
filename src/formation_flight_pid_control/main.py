@@ -29,21 +29,73 @@ Dependencies: numpy, matplotlib
 
 Tip: Adjust Params at the bottom for different handling.
 """
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Deque, Dict, List, Optional, Sequence, TYPE_CHECKING
+
 import numpy as np
 import math
 import time
+
+if TYPE_CHECKING:
+    from matplotlib.lines import Line2D
 
 # ----------------------------- Helpers -----------------------------
 
 def clamp(x, lo, hi):
     return lo if x < lo else (hi if x > hi else x)
 
-import numpy as np
-
 draw_every = 5
 MAX_TRAIL_LENGTH = 500
 e_int_body = np.zeros(3)  # start at zero
+
+
+AIRCRAFT_GEOMETRY_BODY = {
+    "nose":   np.array([40.0,   0.0,    0.0]),
+    "tail":   np.array([-40.0,  0.0,    0.0]),
+    "wing_r": np.array([ 0.0,  44.0,    0.0]),
+    "wing_l": np.array([ 0.0, -44.0,    0.0]),
+    "tail_r": np.array([-40.0, 16.0,    0.0]),
+    "tail_l": np.array([-40.0,-16.0,    0.0]),
+    "tail_v": np.array([-40.0,  0.0,  -16.0]),
+}
+
+NED_TO_ENU = np.array([
+    [0, 1, 0],
+    [1, 0, 0],
+    [0, 0,-1],
+])
+
+
+@dataclass
+class Trail:
+    """Fixed-length history of an aircraft's recent path for plotting."""
+
+    x: Deque[float] = field(default_factory=lambda: deque(maxlen=MAX_TRAIL_LENGTH))
+    y: Deque[float] = field(default_factory=lambda: deque(maxlen=MAX_TRAIL_LENGTH))
+    z: Deque[float] = field(default_factory=lambda: deque(maxlen=MAX_TRAIL_LENGTH))
+
+    def append_point(self, point_enu: np.ndarray) -> None:
+        self.x.append(point_enu[0])
+        self.y.append(point_enu[1])
+        self.z.append(point_enu[2])
+
+    def as_lists(self):
+        return list(self.x), list(self.y), list(self.z)
+
+
+@dataclass
+class AircraftVisual:
+    """Bundles simulation, controls and plotting artifacts for one aircraft."""
+
+    sim: "Airplane6DoFLite"
+    label: str
+    color: str
+    pid: Optional["PIDFollower"] = None
+    trail: Trail = field(default_factory=Trail)
+    throttle_history: List[float] = field(default_factory=list)
+    line_handles: Dict[str, "Line2D"] = field(default_factory=dict)
+    throttle_line: Optional["Line2D"] = None
 
 def earth2body(phi: float, theta: float, psi: float) -> np.ndarray:
     """
@@ -437,7 +489,190 @@ class PIDFollower:
     def pilot_follower2(self, t, state_f, state_L, dt):
         # Just reuse the same follower logic
         return self.pilot_follower(t, state_f, state_L, dt)
-    
+
+
+def build_formation(aircraft_params: Params) -> List[AircraftVisual]:
+    """Create the leader and followers with their initial spacing."""
+
+    leader = AircraftVisual(
+        sim=Airplane6DoFLite(aircraft_params),
+        label="Leader",
+        color="k",
+    )
+
+    follower_specs = [
+        ("Follower 1", "r", np.array([-120.0, -200.0, 100.0])),
+        ("Follower 2", "g", np.array([-400.0, -150.0, -150.0])),
+        ("Follower 3", "b", np.array([-600.0, -500.0, 0.0])),
+        ("Follower 4", "orange", np.array([-600.0, -500.0, 0.0])),
+    ]
+
+    formation = [leader]
+    for label, color, offset in follower_specs:
+        sim = Airplane6DoFLite(aircraft_params)
+        sim.state[0:3] += offset
+        formation.append(
+            AircraftVisual(sim=sim, label=label, color=color, pid=PIDFollower())
+        )
+
+    return formation
+
+
+def configure_figure():
+    """Build the shared 3D scene and throttle history subplot."""
+
+    import matplotlib.pyplot as plt
+
+    fig = plt.figure(figsize=(12, 9))
+    gs = fig.add_gridspec(2, 1, height_ratios=[3, 1])
+    ax_3d = fig.add_subplot(gs[0, 0], projection="3d")
+    ax_throttle = fig.add_subplot(gs[1, 0])
+
+    ax_3d.set_xlabel("X")
+    ax_3d.set_ylabel("Y")
+    ax_3d.set_zlabel("Z")
+    ax_3d.set_xlim(0, 2000)
+    ax_3d.set_ylim(-1000, 1000)
+    ax_3d.set_zlim(0, 2000)
+    ax_3d.view_init(elev=18, azim=-160)
+
+    fig.patch.set_facecolor("white")
+    ax_3d.set_facecolor("white")
+    ax_throttle.set_facecolor("white")
+
+    for axis in (ax_3d.xaxis, ax_3d.yaxis, ax_3d.zaxis):
+        axis.pane.set_facecolor("white")
+
+    ax_3d.set_xticks([])
+    ax_3d.set_yticks([])
+    ax_3d.set_zticks([])
+
+    ax_throttle.set_ylim(0.0, 1.0)
+    ax_throttle.set_xlim(0.0, 60.0)
+    ax_throttle.set_ylabel("Throttle")
+    ax_throttle.set_xlabel("Time [s]")
+    ax_throttle.grid(True, which="both", linestyle="--", linewidth=0.5)
+
+    plt.tight_layout()
+    return fig, ax_3d, ax_throttle
+
+
+def create_aircraft_lines(ax_3d, color: str) -> Dict[str, Any]:
+    """Allocate line objects for one aircraft's wireframe."""
+
+    body_line, = ax_3d.plot([], [], [], linewidth=1.5, color=color)
+    wing_line, = ax_3d.plot([], [], [], linewidth=1.5, color=color)
+    htail_line, = ax_3d.plot([], [], [], linewidth=1.5, color=color)
+    vtail_line, = ax_3d.plot([], [], [], linewidth=1.5, color=color)
+    trail_line, = ax_3d.plot([], [], [], linewidth=1.0, color=color)
+    return {
+        "body": body_line,
+        "wing": wing_line,
+        "htail": htail_line,
+        "vtail": vtail_line,
+        "trail": trail_line,
+    }
+
+
+def attach_aircraft_lines(ax_3d, ax_throttle, formation: Sequence[AircraftVisual]) -> None:
+    """Connect matplotlib artists to each aircraft description."""
+
+    for member in formation:
+        member.line_handles = create_aircraft_lines(ax_3d, member.color)
+        throttle_line, = ax_throttle.plot(
+            [], [], color=member.color, linewidth=1.5, label=member.label
+        )
+        member.throttle_line = throttle_line
+
+    ax_throttle.legend(loc="upper right")
+
+
+def collect_line_artists(formation: Sequence[AircraftVisual]):
+    """Flatten all line handles for blitting/animation bookkeeping."""
+
+    artists = []
+    for member in formation:
+        artists.extend(member.line_handles.values())
+        if member.throttle_line is not None:
+            artists.append(member.throttle_line)
+    return artists
+
+
+def body_to_world_points(sim: "Airplane6DoFLite") -> Dict[str, np.ndarray]:
+    """Convert canonical body points into ENU space for plotting."""
+
+    x, y, z = sim.state[0:3]
+    phi, theta, psi = sim.state[6:9]
+    pos_ned = np.array([x, y, z])
+    R_eb = earth2body(phi, theta, psi).T
+
+    points = {"center": NED_TO_ENU @ pos_ned}
+    for name, body_vec in AIRCRAFT_GEOMETRY_BODY.items():
+        ned_point = (R_eb @ body_vec) + pos_ned
+        points[name] = NED_TO_ENU @ ned_point
+    return points
+
+
+def update_aircraft_visual(member: AircraftVisual) -> None:
+    """Refresh the line segments that represent one aircraft."""
+
+    if not member.line_handles:
+        return
+
+    points = body_to_world_points(member.sim)
+
+    body_line = member.line_handles["body"]
+    body_line.set_data(
+        [points["tail"][0], points["nose"][0]],
+        [points["tail"][1], points["nose"][1]],
+    )
+    body_line.set_3d_properties([points["tail"][2], points["nose"][2]])
+
+    wing_line = member.line_handles["wing"]
+    wing_line.set_data(
+        [points["wing_l"][0], points["wing_r"][0]],
+        [points["wing_l"][1], points["wing_r"][1]],
+    )
+    wing_line.set_3d_properties([points["wing_l"][2], points["wing_r"][2]])
+
+    htail_line = member.line_handles["htail"]
+    htail_line.set_data(
+        [points["tail_l"][0], points["tail_r"][0]],
+        [points["tail_l"][1], points["tail_r"][1]],
+    )
+    htail_line.set_3d_properties([points["tail_l"][2], points["tail_r"][2]])
+
+    vtail_line = member.line_handles["vtail"]
+    vtail_line.set_data(
+        [points["tail"][0], points["tail_v"][0]],
+        [points["tail"][1], points["tail_v"][1]],
+    )
+    vtail_line.set_3d_properties([points["tail"][2], points["tail_v"][2]])
+
+    member.trail.append_point(points["center"])
+    trail_x, trail_y, trail_z = member.trail.as_lists()
+    trail_line = member.line_handles["trail"]
+    trail_line.set_data(trail_x, trail_y)
+    trail_line.set_3d_properties(trail_z)
+
+
+def update_throttle_plot(ax, time_history: Sequence[float], formation: Sequence[AircraftVisual]) -> None:
+    """Keep the throttle subplot aligned with the latest simulation time."""
+
+    if not time_history:
+        return
+
+    times = np.array(time_history)
+    t_max = times[-1]
+    if t_max <= 60.0:
+        ax.set_xlim(0.0, max(60.0, t_max))
+    else:
+        ax.set_xlim(t_max - 60.0, t_max)
+
+    for member in formation:
+        if member.throttle_line is not None:
+            member.throttle_line.set_data(times, member.throttle_history)
+
 
 def demo_sim():
     import matplotlib.pyplot as plt
@@ -445,203 +680,67 @@ def demo_sim():
     from matplotlib.animation import FuncAnimation
 
     p = Params()
-    sim1 = Airplane6DoFLite(p)        # Leader
-    sim2 = Airplane6DoFLite(p)        # Follower
-    sim3 = Airplane6DoFLite(p)        # Follower
-    sim4 = Airplane6DoFLite(p)        # Follower
-    sim5 = Airplane6DoFLite(p)        # Follower
+    formation = build_formation(p)
 
-    pid2 = PIDFollower()
-    pid3 = PIDFollower()
-    pid4 = PIDFollower()
-    pid5 = PIDFollower()
-
-    # Offset follower to start a bit behind leader
-    sim2.state[0] -= 120.0
-    sim2.state[1] -= 200.0
-    sim2.state[2] += 100.0
-
-    sim3.state[0] -= 400.0
-    sim3.state[2] -= 150.0
-    sim3.state[1] -= 150.0
-
-    sim4.state[0] -= 600.0
-    sim4.state[1] -= 500.0
-
-    sim5.state[0] -= 600.0
-    sim5.state[1] -= 500.0
-    
     dt = 0.05
     Tfinal = 10000.0
     steps = int(Tfinal / dt)
     t = 0.0
 
-    # For plotting
-    # Trails
-    trail1_x, trail1_y, trail1_z = [], [], []
-    trail2_x, trail2_y, trail2_z = [], [], []
-    trail3_x, trail3_y, trail3_z = [], [], []
-    trail4_x, trail4_y, trail4_z = [], [], []
-    trail5_x, trail5_y, trail5_z = [], [], []
+    fig, ax_3d, ax_throttle = configure_figure()
+    attach_aircraft_lines(ax_3d, ax_throttle, formation)
 
-    fig = plt.figure(figsize=(12, 8))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
-    ax.set_xlim(0, 2000)  # these should be scaled to the same length to make sure things aren't warped
-    ax.set_ylim(-1000, 1000)
-    ax.set_zlim(0, 2000)
-    ax.view_init(elev=18, azim=-160)
-
-    # White background for figure and axes
-    fig.patch.set_facecolor('white')
-    ax.set_facecolor('white')
-
-    # Make 3D panes white instead of gray
-    ax.xaxis.pane.set_facecolor('white')
-    ax.yaxis.pane.set_facecolor('white')
-    ax.zaxis.pane.set_facecolor('white')
-
-    # Hide tick values
-    ax.set_xticks([])
-    ax.set_yticks([])
-    ax.set_zticks([])
-    plt.tight_layout()
-
-    # Geometry scale
-    scale = 40.0
-
-    # Define airplane geometry in body frame
-    nose_b   = np.array([ scale,   0.0,   0.0])
-    tail_b   = np.array([-scale,   0.0,   0.0])
-    wing_r_b = np.array([ 0.0,   scale*1.1, 0.0])
-    wing_l_b = np.array([ 0.0,  -scale*1.1, 0.0])
-    tail_r_b  = tail_b + np.array([0.0,  scale*0.4, 0.0])
-    tail_l_b  = tail_b + np.array([0.0, -scale*0.4, 0.0])
-    tail_v_b  = np.array([-scale, 0.0,  -scale*0.4])
-
-    # NED→ENU transform for plotting
-    C_ned_to_enu = np.array([
-        [0, 1, 0],
-        [1, 0, 0],
-        [0, 0,-1],
-    ])
-
-    # Make a set of line handles for each aircraft
-    def make_aircraft_handles(color_body, color_trail):
-        body_line, = ax.plot([], [], [], linewidth=1.5, color=color_body)
-        wing_line, = ax.plot([], [], [], linewidth=1.5, color=color_body)
-        htail_line, = ax.plot([], [], [], linewidth=1.5, color=color_body)
-        vtail_line, = ax.plot([], [], [], linewidth=1.5, color=color_body)
-        trail_line, = ax.plot([], [], [], linewidth=1, color=color_trail)
-        return dict(
-            body=body_line, wing=wing_line,
-            htail=htail_line, vtail=vtail_line,
-            trail=trail_line
-        )
-    
-    ac1_lines = make_aircraft_handles("k", "k")
-    ac2_lines = make_aircraft_handles("r", "r")
-    ac3_lines = make_aircraft_handles("g", "g")
-    ac4_lines = make_aircraft_handles("b", "b")
-    ac5_lines = make_aircraft_handles("orange", "orange")
+    time_history: List[float] = []
 
     def init():
-        for hdict in (ac1_lines, ac2_lines, ac3_lines, ac4_lines):
-            for ln in hdict.values():
-                ln.set_data([], [])
-                ln.set_3d_properties([])
-        return list(ac1_lines.values()) + list(ac2_lines.values()) + list(ac3_lines.values()) + list(ac4_lines.values())
+        for member in formation:
+            for line in member.line_handles.values():
+                line.set_data([], [])
+                line.set_3d_properties([])
+            if member.throttle_line is not None:
+                member.throttle_line.set_data([], [])
+        return collect_line_artists(formation)
 
-
-    def draw_aircraft(sim, trails, lines):
-        x, y, z = sim.state[0:3]
-        phi, theta, psi = sim.state[6:9]
-        pos_ned = np.array([x, y, z])
-
-        # Rotation
-        R_be = earth2body(phi, theta, psi)
-        R_eb = R_be.T
-
-        def to_plot(p_b):
-            p_ned = (R_eb @ p_b) + pos_ned
-            return C_ned_to_enu @ p_ned
-
-        nose   = to_plot(nose_b)
-        tail   = to_plot(tail_b)
-        wing_r = to_plot(wing_r_b)
-        wing_l = to_plot(wing_l_b)
-        tail_r = to_plot(tail_r_b)
-        tail_l = to_plot(tail_l_b)
-        tail_v = to_plot(tail_v_b)
-
-        # Draw geometry
-        lines["body"].set_data([tail[0], nose[0]], [tail[1], nose[1]])
-        lines["body"].set_3d_properties([tail[2], nose[2]])
-
-        lines["wing"].set_data([wing_l[0], wing_r[0]], [wing_l[1], wing_r[1]])
-        lines["wing"].set_3d_properties([wing_l[2], wing_r[2]])
-
-        lines["htail"].set_data([tail_l[0], tail_r[0]], [tail_l[1], tail_r[1]])
-        lines["htail"].set_3d_properties([tail_l[2], tail_r[2]])
-
-        lines["vtail"].set_data([tail[0], tail_v[0]], [tail[1], tail_v[1]])
-        lines["vtail"].set_3d_properties([tail[2], tail_v[2]])
-
-        # Trail
-        p_plot = C_ned_to_enu @ pos_ned
-        trails[0].append(p_plot[0])
-        trails[1].append(p_plot[1])
-        trails[2].append(p_plot[2])
-        if len(trails[0]) > MAX_TRAIL_LENGTH:
-            trails[0].pop(0); trails[1].pop(0); trails[2].pop(0)
-
-        lines["trail"].set_data(trails[0], trails[1])
-        lines["trail"].set_3d_properties(trails[2])
-
-
-    def update(frame):
+    def update(_frame_index: int):
         nonlocal t
 
         if t >= Tfinal:
-            plt.close(fig)   # stop animation when done
+            plt.close(fig)
             return []
-    
+
         for _ in range(draw_every):
-            # Leader follows its own pilot
-            u1 = PIDFollower.pilot_leader(t, sim1.state)
-            sim1.step(u1, dt)
+            leader = formation[0]
+            u_leader = PIDFollower.pilot_leader(t, leader.sim.state)
+            leader.sim.step(u_leader, dt)
+            leader.throttle_history.append(u_leader[0])
 
-            # Follower 1 tracks leader
-            u2, F_ext2, M_ext2 = pid2.pilot_follower(t, sim2.state, sim1.state, dt)
-            sim2.step(u2, dt, ext_F_body=F_ext2, ext_M_body=M_ext2)
-
-            # Follower 2 tracks follower 1
-            u3, F_ext3, M_ext3 = pid3.pilot_follower(t, sim3.state, sim2.state, dt)
-            sim3.step(u3, dt, ext_F_body=F_ext3, ext_M_body=M_ext3)
-
-            # Follower 2 tracks follower 1
-            u4, F_ext4, M_ext4 = pid4.pilot_follower(t, sim4.state, sim3.state, dt)
-            sim4.step(u4, dt, ext_F_body=F_ext4, ext_M_body=M_ext4)
-
-            # Follower 2 tracks follower 1
-            u5, F_ext5, M_ext5 = pid5.pilot_follower(t, sim5.state, sim4.state, dt)
-            sim5.step(u5, dt, ext_F_body=F_ext5, ext_M_body=M_ext5)
+            for follower, target in zip(formation[1:], formation[:-1]):
+                if follower.pid is None:
+                    raise ValueError("Follower missing PID controller")
+                u_cmd, force, moment = follower.pid.pilot_follower(
+                    t, follower.sim.state, target.sim.state, dt
+                )
+                follower.sim.step(u_cmd, dt, ext_F_body=force, ext_M_body=moment)
+                follower.throttle_history.append(u_cmd[0])
 
             t += dt
+            time_history.append(t)
 
-        draw_aircraft(sim1, (trail1_x, trail1_y, trail1_z), ac1_lines)
-        draw_aircraft(sim2, (trail2_x, trail2_y, trail2_z), ac2_lines)
-        draw_aircraft(sim3, (trail3_x, trail3_y, trail3_z), ac3_lines)
-        draw_aircraft(sim4, (trail4_x, trail4_y, trail4_z), ac4_lines)
-        draw_aircraft(sim5, (trail5_x, trail5_y, trail5_z), ac5_lines)
+        for member in formation:
+            update_aircraft_visual(member)
 
-        ax.set_box_aspect([1, 1, 1])
-        return list(ac1_lines.values()) + list(ac2_lines.values()) + list(ac3_lines.values()) + list(ac4_lines.values()) + list(ac5_lines.values())
-        
+        update_throttle_plot(ax_throttle, time_history, formation)
+        ax_3d.set_box_aspect([1, 1, 1])
+        return collect_line_artists(formation)
 
-    ani = FuncAnimation(fig, update, init_func=init, frames=steps, interval=dt*1000, blit=False)
+    FuncAnimation(
+        fig,
+        update,
+        init_func=init,
+        frames=steps,
+        interval=dt * 1000,
+        blit=False,
+    )
     plt.show()
 
 
