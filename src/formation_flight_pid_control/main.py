@@ -733,7 +733,7 @@ def demo_sim():
         ax_3d.set_box_aspect([1, 1, 1])
         return collect_line_artists(formation)
 
-    FuncAnimation(
+    animation = FuncAnimation(
         fig,
         update,
         init_func=init,
@@ -741,6 +741,8 @@ def demo_sim():
         interval=dt * 1000,
         blit=False,
     )
+    # Keep a reference to avoid garbage collection when running as a script.
+    fig._formation_animation = animation  # type: ignore[attr-defined]
     plt.show()
 
 
