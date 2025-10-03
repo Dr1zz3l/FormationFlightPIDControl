@@ -484,8 +484,11 @@ def demo_sim():
     trail4_x, trail4_y, trail4_z = [], [], []
     trail5_x, trail5_y, trail5_z = [], [], []
 
-    fig = plt.figure(figsize=(12, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    fig = plt.figure(figsize=(12, 9))
+    gs = fig.add_gridspec(2, 1, height_ratios=[3, 1])
+    ax = fig.add_subplot(gs[0, 0], projection='3d')
+    ax_throttle = fig.add_subplot(gs[1, 0])
+
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
@@ -497,16 +500,25 @@ def demo_sim():
     # White background for figure and axes
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
+    ax_throttle.set_facecolor('white')
 
     # Make 3D panes white instead of gray
     ax.xaxis.pane.set_facecolor('white')
     ax.yaxis.pane.set_facecolor('white')
     ax.zaxis.pane.set_facecolor('white')
 
-    # Hide tick values
+    # Hide tick values on 3D plot
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_zticks([])
+
+    # Configure throttle axis
+    ax_throttle.set_ylim(0.0, 1.0)
+    ax_throttle.set_xlim(0.0, 60.0)
+    ax_throttle.set_ylabel('Throttle')
+    ax_throttle.set_xlabel('Time [s]')
+    ax_throttle.grid(True, which='both', linestyle='--', linewidth=0.5)
+
     plt.tight_layout()
 
     # Geometry scale
@@ -547,12 +559,38 @@ def demo_sim():
     ac4_lines = make_aircraft_handles("b", "b")
     ac5_lines = make_aircraft_handles("orange", "orange")
 
+    throttle_colors = ["k", "r", "g", "b", "orange"]
+    throttle_labels = [
+        "Leader",
+        "Follower 1",
+        "Follower 2",
+        "Follower 3",
+        "Follower 4",
+    ]
+    throttle_lines = []
+    for color, label in zip(throttle_colors, throttle_labels):
+        line, = ax_throttle.plot([], [], color=color, linewidth=1.5, label=label)
+        throttle_lines.append(line)
+    ax_throttle.legend(loc='upper right')
+
+    time_history = []
+    throttle_history = [[] for _ in range(5)]
+
     def init():
-        for hdict in (ac1_lines, ac2_lines, ac3_lines, ac4_lines):
+        for hdict in (ac1_lines, ac2_lines, ac3_lines, ac4_lines, ac5_lines):
             for ln in hdict.values():
                 ln.set_data([], [])
                 ln.set_3d_properties([])
-        return list(ac1_lines.values()) + list(ac2_lines.values()) + list(ac3_lines.values()) + list(ac4_lines.values())
+        for ln in throttle_lines:
+            ln.set_data([], [])
+        return (
+            list(ac1_lines.values())
+            + list(ac2_lines.values())
+            + list(ac3_lines.values())
+            + list(ac4_lines.values())
+            + list(ac5_lines.values())
+            + throttle_lines
+        )
 
 
     def draw_aircraft(sim, trails, lines):
@@ -629,7 +667,14 @@ def demo_sim():
             u5, F_ext5, M_ext5 = pid5.pilot_follower(t, sim5.state, sim4.state, dt)
             sim5.step(u5, dt, ext_F_body=F_ext5, ext_M_body=M_ext5)
 
-            t += dt
+            t_next = t + dt
+            time_history.append(t_next)
+            throttle_history[0].append(u1[0])
+            throttle_history[1].append(u2[0])
+            throttle_history[2].append(u3[0])
+            throttle_history[3].append(u4[0])
+            throttle_history[4].append(u5[0])
+            t = t_next
 
         draw_aircraft(sim1, (trail1_x, trail1_y, trail1_z), ac1_lines)
         draw_aircraft(sim2, (trail2_x, trail2_y, trail2_z), ac2_lines)
@@ -637,8 +682,26 @@ def demo_sim():
         draw_aircraft(sim4, (trail4_x, trail4_y, trail4_z), ac4_lines)
         draw_aircraft(sim5, (trail5_x, trail5_y, trail5_z), ac5_lines)
 
+        if time_history:
+            times = np.array(time_history)
+            t_max = times[-1]
+            if t_max <= 60.0:
+                ax_throttle.set_xlim(0.0, max(60.0, t_max))
+            else:
+                ax_throttle.set_xlim(t_max - 60.0, t_max)
+
+            for history, line in zip(throttle_history, throttle_lines):
+                line.set_data(times, history)
+
         ax.set_box_aspect([1, 1, 1])
-        return list(ac1_lines.values()) + list(ac2_lines.values()) + list(ac3_lines.values()) + list(ac4_lines.values()) + list(ac5_lines.values())
+        return (
+            list(ac1_lines.values())
+            + list(ac2_lines.values())
+            + list(ac3_lines.values())
+            + list(ac4_lines.values())
+            + list(ac5_lines.values())
+            + throttle_lines
+        )
         
 
     ani = FuncAnimation(fig, update, init_func=init, frames=steps, interval=dt*1000, blit=False)
