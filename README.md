@@ -8,6 +8,7 @@ Author: **Peter Ryseck**\
 Date: **09/27/2025**
 
 Video: https://www.youtube.com/watch?v=voOmPTmaBiU
+code source: https://github.com/peter-ryseck/FormationFlightPIDControl
 
 <img width="400" height="300" alt="Screenshot 2025-09-27 at 4 00 31 PM" src="https://github.com/user-attachments/assets/2ed3f0a1-880c-4ddb-a82e-12954a644c8f" />
 

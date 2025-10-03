@@ -645,5 +645,10 @@ def demo_sim():
     plt.show()
 
 
-if __name__ == "__main__":
+def main():
+    """Main entry point for the formation flight simulation."""
     demo_sim()
+
+
+if __name__ == "__main__":
+    main()
