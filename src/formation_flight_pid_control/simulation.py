@@ -11,6 +11,15 @@ from .utils import clamp
 
 
 class Airplane6DoFLite:
+    """Lightweight 6-DoF rigid-body aircraft model.
+
+    The model integrates translational and rotational dynamics driven by
+    aerodynamic lift, drag, side-force, thrust, and simple control-derived
+    moments. Aerodynamic coefficients follow a quasi-steady, low-angle
+    approximation with a linear lift curve up to a prescribed stall angle and
+    induced drag based on span efficiency. Attitude is represented with
+    quaternions and integrated alongside angular rates to avoid gimbal lock.
+    """
     def __init__(self, aircraft: Params):
         self.aircraft = aircraft
         self.J = np.diag([aircraft.Jx, aircraft.Jy, aircraft.Jz])
@@ -37,6 +46,7 @@ class Airplane6DoFLite:
         R_be = earth2body(quat)
         R_eb = R_be.T
 
+        # Resolve velocity into the body frame to compute aerodynamic angles.
         vel_body = R_be @ np.array([vx, vy, vz])
         u_body, v_body, w_body = vel_body
         vel_norm = max(aircraft.v_eps, float(np.linalg.norm(vel_body)))
@@ -44,6 +54,7 @@ class Airplane6DoFLite:
         alpha = math.atan2(w_body, u_body)
         beta = math.asin(clamp(v_body / vel_norm, -1.0, 1.0))
 
+        # Dynamic pressure for wing forces that scale with velocity squared.
         qbar = 0.5 * aircraft.rho * vel_norm**2
 
         T_force = aircraft.thrust_max * clamp(throttle, 0.0, 1.0)
@@ -51,6 +62,7 @@ class Airplane6DoFLite:
 
         V_hat = vel_body / vel_norm
 
+        # Lift follows a linear curve up to the stall angle, then tapers.
         if alpha <= aircraft.alpha_stall:
             CL_tot = aircraft.CL0 + aircraft.CL_alpha * alpha
         else:
@@ -65,12 +77,14 @@ class Airplane6DoFLite:
         lift_dir /= np.linalg.norm(lift_dir)
         F_lift_body = L_force * lift_dir
 
+        # Side-force from sideslip is aligned with the lateral unit vector.
         CY_tot = aircraft.CY_beta * beta
         Y_force = CY_tot * qbar * aircraft.S_wing_ref_area
         side_dir = np.cross(V_hat, lift_dir)
         side_dir /= np.linalg.norm(side_dir)
         F_side_body = Y_force * side_dir
 
+        # Total drag is zero-lift plus induced drag from lift production.
         CD_induced = CL_tot**2 / (np.pi * aircraft.AR * aircraft.e_const)
         CD_tot = aircraft.CD0 + CD_induced
         D_force = CD_tot * qbar * aircraft.S_wing_ref_area
@@ -78,11 +92,13 @@ class Airplane6DoFLite:
         drag_dir /= np.linalg.norm(drag_dir)
         F_drag_body = D_force * drag_dir
 
+        # Sum of aerodynamic and thrust forces expressed in the body frame.
         F_body = F_side_body + F_thrust_body + F_lift_body + F_drag_body
 
         if ext_F_body is not None:
             F_body = F_body + ext_F_body
 
+        # Convert total forces to the earth frame and add gravity.
         F_earth = R_eb @ F_body + np.array([0.0, 0.0, aircraft.mtom * aircraft.gravity])
 
         M_cmd = np.array(
@@ -92,6 +108,7 @@ class Airplane6DoFLite:
                 aircraft.K_yaw * clamp(yaw_cmd, -1.0, 1.0),
             ]
         ) * qbar
+        # Linear damping moments oppose rotation about each axis.
         M_damp = -np.array([aircraft.Bp * p_rate, aircraft.Bq * q_rate, aircraft.Br * r_rate])
 
         C_M = aircraft.CMAC + (aircraft.x_cg - aircraft.x_ac) / aircraft.c_bar * CL_tot
@@ -102,6 +119,7 @@ class Airplane6DoFLite:
         L_roll = Cl_beta * beta * qbar * aircraft.S_wing_ref_area * aircraft.b_span
         M_lateral_body = np.array([L_roll, 0.0, 0.0])
 
+        # Net moments include control commands, damping, and aerodynamic coupling.
         M_body = M_damp + M_cmd + M_CG_AC + M_lateral_body
 
         if ext_M_body is not None:
@@ -121,13 +139,16 @@ class Airplane6DoFLite:
 
         F_earth, M_body = self.forces_and_moments(state, u, ext_F_body, ext_M_body)
 
+        # Newton's second law for translational acceleration in earth axes.
         accel_world = F_earth / aircraft.mtom
 
         omega = np.array([p_rate, q_rate, r_rate])
+        # Euler's equation for rotational acceleration with gyroscopic coupling.
         omega_dot = self.Jinv @ (M_body - np.cross(omega, self.J @ omega))
 
         quat = normalize_quaternion(np.array([qw, qx, qy, qz]))
         omega_quat = np.array([0.0, *omega])
+        # Quaternion kinematics relate angular velocity to orientation change.
         quat_dot = 0.5 * quat_multiply(quat, omega_quat)
 
         xdot = np.zeros_like(state)
