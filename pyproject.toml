@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
     "matplotlib>=3.10.6",
     "numpy>=2.3.3",
+    "numpy-quaternion>=2023.0.6",
 ]
 
 [project.scripts]

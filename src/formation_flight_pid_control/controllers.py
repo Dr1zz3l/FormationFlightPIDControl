@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from .geometry import earth2body
+from .geometry import rotate_body_to_earth, rotate_earth_to_body
 
 
 class PIDFollower:
@@ -33,21 +33,19 @@ class PIDFollower:
 
         pos_F = state_f[0:3]
         vel_F = state_f[3:6]
-        phi_f, theta_f, psi_f = state_f[6:9]
+        quat_f = state_f[6:10]
 
         pos_L = state_L[0:3]
         vel_L = state_L[3:6]
-        phi_L, theta_L, psi_L = state_L[6:9]
+        quat_L = state_L[6:10]
 
-        R_leader = earth2body(phi_L, theta_L, psi_L)
-        pos_des = pos_L + R_leader.T @ offset_body
+        pos_des = pos_L + rotate_body_to_earth(quat_L, offset_body)
 
         e_p_world = pos_des - pos_F
         e_v_world = vel_L - vel_F
 
-        R_f = earth2body(phi_f, theta_f, psi_f)
-        e_p_body = R_f @ e_p_world
-        e_v_body = R_f @ e_v_world
+        e_p_body = rotate_earth_to_body(quat_f, e_p_world)
+        e_v_body = rotate_earth_to_body(quat_f, e_v_world)
 
         self.e_int_body += e_p_body * dt
 
@@ -69,7 +67,7 @@ class PIDFollower:
 
         r_world = pos_des - pos_F
         dist = np.linalg.norm(r_world)
-        r_body = R_f @ r_world
+        r_body = rotate_earth_to_body(quat_f, r_world)
         lateral = r_body[1]
 
         r_max = 120.0

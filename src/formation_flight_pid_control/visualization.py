@@ -6,7 +6,11 @@ from typing import Any, Deque, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 import numpy as np
 
-from .geometry import AIRCRAFT_GEOMETRY_BODY, NED_TO_ENU, earth2body
+from .geometry import (
+    AIRCRAFT_GEOMETRY_BODY,
+    NED_TO_ENU,
+    rotate_body_to_earth,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - imports for type checking only
     from .controllers import PIDFollower
@@ -115,13 +119,11 @@ def collect_line_artists(formation: Sequence[AircraftVisual]) -> list[Any]:
 
 def body_to_world_points(sim: Airplane6DoFLite) -> Dict[str, np.ndarray]:
     x, y, z = sim.state[0:3]
-    phi, theta, psi = sim.state[6:9]
+    quat = sim.state[6:10]
     pos_ned = np.array([x, y, z])
-    R_eb = earth2body(phi, theta, psi).T
-
     points = {"center": NED_TO_ENU @ pos_ned}
     for name, body_vec in AIRCRAFT_GEOMETRY_BODY.items():
-        ned_point = (R_eb @ body_vec) + pos_ned
+        ned_point = rotate_body_to_earth(quat, body_vec) + pos_ned
         points[name] = NED_TO_ENU @ ned_point
     return points
 

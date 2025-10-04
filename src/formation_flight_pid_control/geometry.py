@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import math
-from typing import Final
+from typing import Final, Sequence
 
 import numpy as np
+import quaternion
 
 AIRCRAFT_GEOMETRY_BODY: Final = {
     "nose": np.array([40.0, 0.0, 0.0]),
@@ -22,49 +22,33 @@ NED_TO_ENU: Final = np.array([
 ])
 
 
-def earth2body(phi: float, theta: float, psi: float) -> np.ndarray:
-    """Rotation matrix from earth (NED) frame to aircraft body frame."""
-    c_phi, s_phi = np.cos(phi), np.sin(phi)
-    c_theta, s_theta = np.cos(theta), np.sin(theta)
-    c_psi, s_psi = np.cos(psi), np.sin(psi)
-
-    r_roll = np.array(
-        [
-            [1, 0, 0],
-            [0, c_phi, s_phi],
-            [0, -s_phi, c_phi],
-        ]
-    )
-
-    r_pitch = np.array(
-        [
-            [c_theta, 0, -s_theta],
-            [0, 1, 0],
-            [s_theta, 0, c_theta],
-        ]
-    )
-
-    r_yaw = np.array(
-        [
-            [c_psi, s_psi, 0],
-            [-s_psi, c_psi, 0],
-            [0, 0, 1],
-        ]
-    )
-
-    return r_roll @ r_pitch @ r_yaw
+def _normalized_quaternion(quat_like: Sequence[float]) -> quaternion.quaternion:
+    quat_array = np.asarray(quat_like, dtype=float)
+    if quat_array.shape != (4,):
+        raise ValueError("Quaternion must have 4 components (w, x, y, z)")
+    quat = quaternion.quaternion(*quat_array)
+    return quaternion.normalized(quat)
 
 
-def euler_rates_matrix(phi: float, theta: float) -> np.ndarray:
-    """Map body angular rates to Euler angle rates for ZYX rotations."""
-    sin_phi, cos_phi = math.sin(phi), math.cos(phi)
-    sin_theta, cos_theta = math.sin(theta), math.cos(theta)
-    tan_theta = math.tan(theta)
+def rotate_vector(quat_like: Sequence[float], vector: Sequence[float]) -> np.ndarray:
+    """Rotate ``vector`` by ``quat_like`` and return the rotated vector."""
 
-    return np.array(
-        [
-            [1.0, sin_phi * tan_theta, cos_phi * tan_theta],
-            [0.0, cos_phi, -sin_phi],
-            [0.0, sin_phi / cos_theta, cos_phi / cos_theta],
-        ]
-    )
+    quat = _normalized_quaternion(quat_like)
+    vec = np.asarray(vector, dtype=float)
+    rotated = quaternion.rotate_vectors(quat, vec)
+    return np.asarray(rotated, dtype=float)
+
+
+def rotate_body_to_earth(quat_like: Sequence[float], vector_body: Sequence[float]) -> np.ndarray:
+    """Rotate a body-frame vector into the earth frame using ``quat_like``."""
+
+    return rotate_vector(quat_like, vector_body)
+
+
+def rotate_earth_to_body(quat_like: Sequence[float], vector_earth: Sequence[float]) -> np.ndarray:
+    """Rotate an earth-frame vector into the body frame using ``quat_like``."""
+
+    quat = _normalized_quaternion(quat_like).conjugate()
+    vec = np.asarray(vector_earth, dtype=float)
+    rotated = quaternion.rotate_vectors(quat, vec)
+    return np.asarray(rotated, dtype=float)
