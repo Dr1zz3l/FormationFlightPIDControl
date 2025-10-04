@@ -14,15 +14,16 @@ class Airplane6DoFLite:
     """Lightweight 6-DoF rigid-body airplane model.
 
     The simulator follows the standard equations of motion for a small aircraft
-    with the state vector ``[x, y, z, u, v, w, q_w, q_x, q_y, q_z, p, q, r]``.
+    with the state vector ``[x, y, z, v_x, v_y, v_z, q_w, q_x, q_y, q_z, p, q, r]``.
     Position ``(x, y, z)`` is expressed in the world/inertial frame using the
-    aerospace convention of +Z downward. The velocity components ``(u, v, w)``
-    and angular rates ``(p, q, r)`` live in the body frame. Attitude is stored
-    as a quaternion that rotates vectors from the world frame into the body
-    frame. Each step performs the following operations:
+    aerospace convention of +Z downward. Linear velocity ``(v_x, v_y, v_z)`` is
+    stored in the world frame while angular rates ``(p, q, r)`` live in the body
+    frame. Attitude is stored as a quaternion that rotates vectors from the
+    world frame into the body frame. Each step performs the following
+    operations:
 
-    * Convert the body-frame velocity and attitude quaternion into world-frame
-      orientation/velocity so that forces can be resolved consistently.
+    * Convert the stored world-frame velocity into body axes using the attitude
+      quaternion so that aerodynamic forces can be resolved consistently.
     * Evaluate aerodynamic force and moment coefficients based on angle of
       attack ``alpha`` and sideslip ``beta`` and apply simple stall and damping
       models.
@@ -57,9 +58,11 @@ class Airplane6DoFLite:
         throttle, roll_cmd, pitch_cmd, yaw_cmd = u
 
         quat = normalize_quaternion(np.array([qw, qx, qy, qz]))
-        R_bw = world2body(quat).T  # rotation that maps body-frame vectors into world frame
+        R_wb = world2body(quat)
+        R_bw = R_wb.T  # rotation that maps body-frame vectors into world frame
 
-        vel_body = np.array([vx, vy, vz])
+        vel_world = np.array([vx, vy, vz])
+        vel_body = R_wb @ vel_world
         u_body, v_body, w_body = vel_body
         vel_norm = max(aircraft.v_eps, float(np.linalg.norm(vel_body)))
 
@@ -150,7 +153,6 @@ class Airplane6DoFLite:
         x, y, z, vx, vy, vz, qw, qx, qy, qz, p_rate, q_rate, r_rate = state
 
         quat = normalize_quaternion(np.array([qw, qx, qy, qz]))
-        R_bw = world2body(quat).T
 
         F_world, M_body = self.forces_and_moments(state, u, ext_F_body, ext_M_body)
 
@@ -164,9 +166,9 @@ class Airplane6DoFLite:
         quat_dot = 0.5 * quat_multiply(quat, omega_quat)
 
         xdot = np.zeros_like(state)
-        vel_body = np.array([vx, vy, vz])
-        # Integrate position in world frame using transformed body velocity
-        xdot[0:3] = R_bw @ vel_body
+        vel_world = np.array([vx, vy, vz])
+        # Integrate position using world-frame velocity stored in the state
+        xdot[0:3] = vel_world
         # Translational acceleration, quaternion rate, and angular acceleration
         xdot[3:6] = accel_world
         xdot[6:10] = quat_dot
