@@ -4,8 +4,9 @@ import math
 from typing import Optional
 
 import numpy as np
+import quaternion
 
-from .geometry import earth2body, normalize_quaternion, quat_multiply
+from .geometry import rotate_body_to_earth, rotate_earth_to_body, _normalized_quaternion
 from .params import Params
 from .utils import clamp
 
@@ -42,12 +43,10 @@ class Airplane6DoFLite:
         x, y, z, vx, vy, vz, qw, qx, qy, qz, p_rate, q_rate, r_rate = state
         throttle, roll_cmd, pitch_cmd, yaw_cmd = u
 
-        quat = normalize_quaternion(np.array([qw, qx, qy, qz]))
-        R_be = earth2body(quat)
-        R_eb = R_be.T
-
-        # Resolve velocity into the body frame to compute aerodynamic angles.
-        vel_body = R_be @ np.array([vx, vy, vz])
+        quat_array = np.array([qw, qx, qy, qz])
+        quat = _normalized_quaternion(quat_array)
+        quat_array = np.array([quat.w, quat.x, quat.y, quat.z])
+        vel_body = rotate_earth_to_body(quat_array, np.array([vx, vy, vz]))
         u_body, v_body, w_body = vel_body
         vel_norm = max(aircraft.v_eps, float(np.linalg.norm(vel_body)))
 
@@ -98,8 +97,9 @@ class Airplane6DoFLite:
         if ext_F_body is not None:
             F_body = F_body + ext_F_body
 
-        # Convert total forces to the earth frame and add gravity.
-        F_earth = R_eb @ F_body + np.array([0.0, 0.0, aircraft.mtom * aircraft.gravity])
+        F_earth = rotate_body_to_earth(quat_array, F_body) + np.array(
+            [0.0, 0.0, aircraft.mtom * aircraft.gravity]
+        )
 
         M_cmd = np.array(
             [
@@ -146,15 +146,14 @@ class Airplane6DoFLite:
         # Euler's equation for rotational acceleration with gyroscopic coupling.
         omega_dot = self.Jinv @ (M_body - np.cross(omega, self.J @ omega))
 
-        quat = normalize_quaternion(np.array([qw, qx, qy, qz]))
-        omega_quat = np.array([0.0, *omega])
-        # Quaternion kinematics relate angular velocity to orientation change.
-        quat_dot = 0.5 * quat_multiply(quat, omega_quat)
+        quat = _normalized_quaternion([qw, qx, qy, qz])
+        omega_quat = quaternion.quaternion(0.0, *omega)
+        quat_dot = 0.5 * quat * omega_quat
 
         xdot = np.zeros_like(state)
         xdot[0:3] = np.array([vx, vy, vz])
         xdot[3:6] = accel_world
-        xdot[6:10] = quat_dot
+        xdot[6:10] = np.array([quat_dot.w, quat_dot.x, quat_dot.y, quat_dot.z])
         xdot[10:13] = omega_dot
         return xdot
 
@@ -171,5 +170,7 @@ class Airplane6DoFLite:
         k3 = self.f(state + 0.5 * dt * k2, u, ext_F_body, ext_M_body)
         k4 = self.f(state + dt * k3, u, ext_F_body, ext_M_body)
         self.state = state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
-        self.state[6:10] = normalize_quaternion(self.state[6:10])
+
+        quat = _normalized_quaternion(self.state[6:10])
+        self.state[6:10] = np.array([quat.w, quat.x, quat.y, quat.z])
         return self.state.copy()
