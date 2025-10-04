@@ -33,19 +33,19 @@ class PIDFollower:
 
         pos_F = state_f[0:3]
         vel_F = state_f[3:6]
-        phi_f, theta_f, psi_f = state_f[6:9]
+        quat_f = state_f[6:10]
 
         pos_L = state_L[0:3]
         vel_L = state_L[3:6]
-        phi_L, theta_L, psi_L = state_L[6:9]
+        quat_L = state_L[6:10]
 
-        R_leader = earth2body(phi_L, theta_L, psi_L)
+        R_leader = earth2body(quat_L)
         pos_des = pos_L + R_leader.T @ offset_body
 
         e_p_world = pos_des - pos_F
         e_v_world = vel_L - vel_F
 
-        R_f = earth2body(phi_f, theta_f, psi_f)
+        R_f = earth2body(quat_f)
         e_p_body = R_f @ e_p_world
         e_v_body = R_f @ e_v_world
 

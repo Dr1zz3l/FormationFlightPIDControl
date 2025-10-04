@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from typing import Final
 
 import numpy as np
@@ -22,49 +21,49 @@ NED_TO_ENU: Final = np.array([
 ])
 
 
-def earth2body(phi: float, theta: float, psi: float) -> np.ndarray:
-    """Rotation matrix from earth (NED) frame to aircraft body frame."""
-    c_phi, s_phi = np.cos(phi), np.sin(phi)
-    c_theta, s_theta = np.cos(theta), np.sin(theta)
-    c_psi, s_psi = np.cos(psi), np.sin(psi)
+def normalize_quaternion(quaternion: np.ndarray) -> np.ndarray:
+    """Return a unit-length copy of ``quaternion``."""
 
-    r_roll = np.array(
+    q = np.asarray(quaternion, dtype=float)
+    norm = np.linalg.norm(q)
+    if norm == 0.0:
+        raise ValueError("Quaternion norm is zero")
+    return q / norm
+
+
+def quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    """Hamilton product of two quaternions (w, x, y, z)."""
+
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array(
         [
-            [1, 0, 0],
-            [0, c_phi, s_phi],
-            [0, -s_phi, c_phi],
+            w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+            w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+            w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+            w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
         ]
     )
 
-    r_pitch = np.array(
-        [
-            [c_theta, 0, -s_theta],
-            [0, 1, 0],
-            [s_theta, 0, c_theta],
-        ]
-    )
 
-    r_yaw = np.array(
-        [
-            [c_psi, s_psi, 0],
-            [-s_psi, c_psi, 0],
-            [0, 0, 1],
-        ]
-    )
+def quat_to_rotmat(quaternion: np.ndarray) -> np.ndarray:
+    """Rotation matrix mapping body-frame vectors to earth-frame."""
 
-    return r_roll @ r_pitch @ r_yaw
-
-
-def euler_rates_matrix(phi: float, theta: float) -> np.ndarray:
-    """Map body angular rates to Euler angle rates for ZYX rotations."""
-    sin_phi, cos_phi = math.sin(phi), math.cos(phi)
-    sin_theta, cos_theta = math.sin(theta), math.cos(theta)
-    tan_theta = math.tan(theta)
+    qw, qx, qy, qz = normalize_quaternion(quaternion)
+    xx, yy, zz = qx * qx, qy * qy, qz * qz
+    xy, xz, yz = qx * qy, qx * qz, qy * qz
+    wx, wy, wz = qw * qx, qw * qy, qw * qz
 
     return np.array(
         [
-            [1.0, sin_phi * tan_theta, cos_phi * tan_theta],
-            [0.0, cos_phi, -sin_phi],
-            [0.0, sin_phi / cos_theta, cos_phi / cos_theta],
+            [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+            [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+            [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
         ]
     )
+
+
+def earth2body(quaternion: np.ndarray) -> np.ndarray:
+    """Rotation matrix from earth (NED) frame to aircraft body frame."""
+
+    return quat_to_rotmat(quaternion).T

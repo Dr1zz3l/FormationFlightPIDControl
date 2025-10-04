@@ -5,7 +5,7 @@ from typing import Optional
 
 import numpy as np
 
-from .geometry import earth2body, euler_rates_matrix
+from .geometry import earth2body, normalize_quaternion, quat_multiply
 from .params import Params
 from .utils import clamp
 
@@ -15,12 +15,12 @@ class Airplane6DoFLite:
         self.aircraft = aircraft
         self.J = np.diag([aircraft.Jx, aircraft.Jy, aircraft.Jz])
         self.Jinv = np.diag([1.0 / aircraft.Jx, 1.0 / aircraft.Jy, 1.0 / aircraft.Jz])
-        self.state = np.zeros(12)
+        self.state = np.zeros(13)
         self.state[2] = -700.0
         self.state[0] = 200.0
         self.state[1] = 200.0
         self.state[3] = 26.0
-        self.state[7] = 5 * np.pi / 180
+        self.state[6] = 1.0
 
     def forces_and_moments(
         self,
@@ -30,10 +30,11 @@ class Airplane6DoFLite:
         ext_M_body: Optional[np.ndarray] = None,
     ):
         aircraft = self.aircraft
-        x, y, z, vx, vy, vz, phi, theta, psi, p_rate, q_rate, r_rate = state
+        x, y, z, vx, vy, vz, qw, qx, qy, qz, p_rate, q_rate, r_rate = state
         throttle, roll_cmd, pitch_cmd, yaw_cmd = u
 
-        R_be = earth2body(phi, theta, psi)
+        quat = normalize_quaternion(np.array([qw, qx, qy, qz]))
+        R_be = earth2body(quat)
         R_eb = R_be.T
 
         vel_body = R_be @ np.array([vx, vy, vz])
@@ -116,7 +117,7 @@ class Airplane6DoFLite:
         ext_M_body: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         aircraft = self.aircraft
-        x, y, z, vx, vy, vz, phi, theta, psi, p_rate, q_rate, r_rate = state
+        x, y, z, vx, vy, vz, qw, qx, qy, qz, p_rate, q_rate, r_rate = state
 
         F_earth, M_body = self.forces_and_moments(state, u, ext_F_body, ext_M_body)
 
@@ -125,14 +126,15 @@ class Airplane6DoFLite:
         omega = np.array([p_rate, q_rate, r_rate])
         omega_dot = self.Jinv @ (M_body - np.cross(omega, self.J @ omega))
 
-        T = euler_rates_matrix(phi, theta)
-        eulerdot = T @ omega
+        quat = normalize_quaternion(np.array([qw, qx, qy, qz]))
+        omega_quat = np.array([0.0, *omega])
+        quat_dot = 0.5 * quat_multiply(quat, omega_quat)
 
         xdot = np.zeros_like(state)
         xdot[0:3] = np.array([vx, vy, vz])
         xdot[3:6] = accel_world
-        xdot[6:9] = eulerdot
-        xdot[9:12] = omega_dot
+        xdot[6:10] = quat_dot
+        xdot[10:13] = omega_dot
         return xdot
 
     def step(
@@ -148,7 +150,5 @@ class Airplane6DoFLite:
         k3 = self.f(state + 0.5 * dt * k2, u, ext_F_body, ext_M_body)
         k4 = self.f(state + dt * k3, u, ext_F_body, ext_M_body)
         self.state = state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
-        self.state[6] = ((self.state[6] + math.pi) % (2 * math.pi)) - math.pi
-        self.state[7] = clamp(self.state[7], -math.radians(89.0), math.radians(89.0))
-        self.state[8] = ((self.state[8] + math.pi) % (2 * math.pi)) - math.pi
+        self.state[6:10] = normalize_quaternion(self.state[6:10])
         return self.state.copy()

@@ -115,9 +115,9 @@ def collect_line_artists(formation: Sequence[AircraftVisual]) -> list[Any]:
 
 def body_to_world_points(sim: Airplane6DoFLite) -> Dict[str, np.ndarray]:
     x, y, z = sim.state[0:3]
-    phi, theta, psi = sim.state[6:9]
+    quat = sim.state[6:10]
     pos_ned = np.array([x, y, z])
-    R_eb = earth2body(phi, theta, psi).T
+    R_eb = earth2body(quat).T
 
     points = {"center": NED_TO_ENU @ pos_ned}
     for name, body_vec in AIRCRAFT_GEOMETRY_BODY.items():
