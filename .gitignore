@@ -1,2 +1,6 @@
+<<<<<<< HEAD
 __pycache__/
 *.py[cod]
+=======
+./src/formation_flight_pid_control/__pycache__/
+>>>>>>> 0a52da92d81f7a6b57f670e5eb3fc9dfb0e8b53b
