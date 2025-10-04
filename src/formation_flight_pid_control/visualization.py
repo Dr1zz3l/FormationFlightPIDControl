@@ -6,7 +6,7 @@ from typing import Any, Deque, Dict, List, Optional, Sequence, TYPE_CHECKING
 
 import numpy as np
 
-from .geometry import AIRCRAFT_GEOMETRY_BODY, NED_TO_ENU, earth2body
+from .geometry import AIRCRAFT_GEOMETRY_BODY, NED_TO_ENU, world2body
 
 if TYPE_CHECKING:  # pragma: no cover - imports for type checking only
     from .controllers import PIDFollower
@@ -117,11 +117,11 @@ def body_to_world_points(sim: Airplane6DoFLite) -> Dict[str, np.ndarray]:
     x, y, z = sim.state[0:3]
     quat = sim.state[6:10]
     pos_ned = np.array([x, y, z])
-    R_eb = earth2body(quat).T
+    R_bw = world2body(quat).T
 
     points = {"center": NED_TO_ENU @ pos_ned}
     for name, body_vec in AIRCRAFT_GEOMETRY_BODY.items():
-        ned_point = (R_eb @ body_vec) + pos_ned
+        ned_point = (R_bw @ body_vec) + pos_ned
         points[name] = NED_TO_ENU @ ned_point
     return points
 

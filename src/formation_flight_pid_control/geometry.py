@@ -47,7 +47,7 @@ def quat_multiply(q1: np.ndarray, q2: np.ndarray) -> np.ndarray:
 
 
 def quat_to_rotmat(quaternion: np.ndarray) -> np.ndarray:
-    """Rotation matrix mapping body-frame vectors to earth-frame."""
+    """Rotation matrix mapping body-frame vectors to world frame."""
 
     qw, qx, qy, qz = normalize_quaternion(quaternion)
     xx, yy, zz = qx * qx, qy * qy, qz * qz
@@ -63,7 +63,7 @@ def quat_to_rotmat(quaternion: np.ndarray) -> np.ndarray:
     )
 
 
-def earth2body(quaternion: np.ndarray) -> np.ndarray:
-    """Rotation matrix from earth (NED) frame to aircraft body frame."""
+def world2body(quaternion: np.ndarray) -> np.ndarray:
+    """Rotation matrix from world (NED) frame to aircraft body frame."""
 
     return quat_to_rotmat(quaternion).T

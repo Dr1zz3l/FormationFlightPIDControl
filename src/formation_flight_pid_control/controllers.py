@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-from .geometry import earth2body
+from .geometry import world2body
 
 
 class PIDFollower:
@@ -39,13 +39,13 @@ class PIDFollower:
         vel_L = state_L[3:6]
         quat_L = state_L[6:10]
 
-        R_leader = earth2body(quat_L)
+        R_leader = world2body(quat_L)
         pos_des = pos_L + R_leader.T @ offset_body
 
         e_p_world = pos_des - pos_F
         e_v_world = vel_L - vel_F
 
-        R_f = earth2body(quat_f)
+        R_f = world2body(quat_f)
         e_p_body = R_f @ e_p_world
         e_v_body = R_f @ e_v_world
 
