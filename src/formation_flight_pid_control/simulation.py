@@ -6,7 +6,7 @@ from typing import Optional
 import numpy as np
 import quaternion
 
-from .geometry import rotate_body_to_earth, rotate_earth_to_body
+from .geometry import rotate_body_to_earth, rotate_earth_to_body, _normalized_quaternion
 from .params import Params
 from .utils import clamp
 
@@ -34,7 +34,8 @@ class Airplane6DoFLite:
         x, y, z, vx, vy, vz, qw, qx, qy, qz, p_rate, q_rate, r_rate = state
         throttle, roll_cmd, pitch_cmd, yaw_cmd = u
 
-        quat = quaternion.normalized(quaternion.quaternion(qw, qx, qy, qz))
+        quat_array = np.array([qw, qx, qy, qz])
+        quat = _normalized_quaternion(quat_array)
         quat_array = np.array([quat.w, quat.x, quat.y, quat.z])
         vel_body = rotate_earth_to_body(quat_array, np.array([vx, vy, vz]))
         u_body, v_body, w_body = vel_body
@@ -127,7 +128,7 @@ class Airplane6DoFLite:
         omega = np.array([p_rate, q_rate, r_rate])
         omega_dot = self.Jinv @ (M_body - np.cross(omega, self.J @ omega))
 
-        quat = quaternion.normalized(quaternion.quaternion(qw, qx, qy, qz))
+        quat = _normalized_quaternion([qw, qx, qy, qz])
         omega_quat = quaternion.quaternion(0.0, *omega)
         quat_dot = 0.5 * quat * omega_quat
 
@@ -152,6 +153,6 @@ class Airplane6DoFLite:
         k4 = self.f(state + dt * k3, u, ext_F_body, ext_M_body)
         self.state = state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
 
-        quat = quaternion.normalized(quaternion.quaternion(*self.state[6:10]))
+        quat = _normalized_quaternion(self.state[6:10])
         self.state[6:10] = np.array([quat.w, quat.x, quat.y, quat.z])
         return self.state.copy()

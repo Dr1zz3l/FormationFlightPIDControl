@@ -27,27 +27,19 @@ def _normalized_quaternion(quat_like: Sequence[float]) -> quaternion.quaternion:
     if quat_array.shape != (4,):
         raise ValueError("Quaternion must have 4 components (w, x, y, z)")
     quat = quaternion.quaternion(*quat_array)
-    return quaternion.normalized(quat)
-
-
-def rotate_vector(quat_like: Sequence[float], vector: Sequence[float]) -> np.ndarray:
-    """Rotate ``vector`` by ``quat_like`` and return the rotated vector."""
-
-    quat = _normalized_quaternion(quat_like)
-    vec = np.asarray(vector, dtype=float)
-    rotated = quaternion.rotate_vectors(quat, vec)
-    return np.asarray(rotated, dtype=float)
+    return quat / np.abs(quat)
 
 
 def rotate_body_to_earth(quat_like: Sequence[float], vector_body: Sequence[float]) -> np.ndarray:
     """Rotate a body-frame vector into the earth frame using ``quat_like``."""
-
-    return rotate_vector(quat_like, vector_body)
+    quat = _normalized_quaternion(quat_like)
+    vec = np.asarray(vector_body, dtype=float)
+    rotated = quaternion.rotate_vectors(quat, vec)
+    return np.asarray(rotated, dtype=float)
 
 
 def rotate_earth_to_body(quat_like: Sequence[float], vector_earth: Sequence[float]) -> np.ndarray:
     """Rotate an earth-frame vector into the body frame using ``quat_like``."""
-
     quat = _normalized_quaternion(quat_like).conjugate()
     vec = np.asarray(vector_earth, dtype=float)
     rotated = quaternion.rotate_vectors(quat, vec)
