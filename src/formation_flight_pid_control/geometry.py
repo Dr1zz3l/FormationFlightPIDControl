@@ -22,6 +22,20 @@ NED_TO_ENU: Final = np.array([
 ])
 
 
+def normalize_quaternion(pose_q: quaternion.quaternion) -> quaternion.quaternion:
+    """Return a numerically safe unit quaternion."""
+
+    components = quaternion.as_float_array(pose_q)
+    if not np.all(np.isfinite(components)):
+        return quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
+
+    norm = float(np.linalg.norm(components))
+    if norm < 1e-12:
+        return quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
+
+    return quaternion.quaternion(* (components / norm))
+
+
 def rotate_vector_by_quaternion(pose_q, vector) -> np.ndarray:
     """Rotate a vector using quaternion.
     
@@ -38,12 +52,8 @@ def rotate_vector_by_quaternion(pose_q, vector) -> np.ndarray:
         if quat_array.shape != (4,):
             raise ValueError("Quaternion must have 4 components (w, x, y, z)")
         pose_q = quaternion.quaternion(*quat_array)
-    
-    # Normalize quaternion
-    pose_q_norm = np.abs(pose_q)
-    if pose_q_norm == 0:
-        raise ValueError("Cannot normalize zero quaternion")
-    pose_q = pose_q / pose_q_norm
+
+    pose_q = normalize_quaternion(pose_q)
     
     # Convert vector to numpy array
     vector = np.asarray(vector, dtype=float)

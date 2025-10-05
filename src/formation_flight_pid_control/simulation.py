@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from typing import Optional, NamedTuple
+from typing import NamedTuple, Optional
 
 import numpy as np
 import quaternion
 
-from .geometry import rotate_vector_by_quaternion
+from .geometry import normalize_quaternion, rotate_vector_by_quaternion
 from .params import Params
 from .utils import clamp
 
@@ -58,16 +58,21 @@ class Airplane():
         )
 
     def step(
-            self, 
-            dt: float, 
-            control_inputs: ControlInputs, 
-            ext_F_body: np.ndarray = np.zeros(3), 
-            ext_M_body: np.ndarray = np.zeros(3),
+            self,
+            dt: float,
+            control_inputs: ControlInputs,
+            ext_F_body: Optional[np.ndarray] = None,
+            ext_M_body: Optional[np.ndarray] = None,
             ) -> None:
-        
+
         """Advance the simulation by one time step using RK4 integration."""
 
         current_state = self.state
+        ext_F_body = np.zeros(3, dtype=float) if ext_F_body is None else np.asarray(ext_F_body, dtype=float)
+        ext_M_body = np.zeros(3, dtype=float) if ext_M_body is None else np.asarray(ext_M_body, dtype=float)
+
+        if ext_F_body.shape != (3,) or ext_M_body.shape != (3,):
+            raise ValueError("External force and moment vectors must have shape (3,)")
         
         # Calculate the 4 RK4 slopes
         k1 = self._dynamics(current_state, control_inputs, ext_F_body, ext_M_body)
@@ -75,26 +80,19 @@ class Airplane():
         k3 = self._dynamics(self._add_states(current_state, k2, dt/2), control_inputs, ext_F_body, ext_M_body)
         k4 = self._dynamics(self._add_states(current_state, k3, dt), control_inputs, ext_F_body, ext_M_body)
         
-        # Combine using RK4 formula
-        new_state = self._rk4_combine(current_state, k1, k2, k3, k4, dt)
-        
-        # Normalize quaternion to prevent drift
-        pose_norm = np.abs(new_state.pose)
-        if pose_norm < 1e-12:  # Quaternion became degenerate
-            # Reset to identity quaternion if corrupted
-            normalized_pose = quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
-        else:
-            normalized_pose = new_state.pose / pose_norm
-        new_state = replace(new_state, pose=normalized_pose)
-
-        self.state = new_state
+        # Combine using RK4 formula and normalize the quaternion component
+        self.state = self._normalize_state_pose(
+            self._rk4_combine(current_state, k1, k2, k3, k4, dt)
+        )
 
     def _calculate_forces_and_moments(self, state: AirplaneState, controls: ControlInputs, ext_F_body: np.ndarray, ext_M_body: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Calculate aerodynamic and thrust forces and moments."""
         
         # Unpack state and control inputs
         # Transform world velocity to body frame (world to body rotation)
-        V_body = rotate_vector_by_quaternion(state.pose.conjugate(), state.velocity)
+        pose_unit = normalize_quaternion(state.pose)
+
+        V_body = rotate_vector_by_quaternion(pose_unit.conjugate(), state.velocity)
         
         # Calculate airspeed with safety check
         airspeed = np.linalg.norm(V_body)
@@ -141,9 +139,9 @@ class Airplane():
         F_total_body = F_aero_body + F_thrust_body + ext_F_body
 
         # Convert total force to world frame (body to world rotation)
-        F_total_world = rotate_vector_by_quaternion(state.pose, F_total_body)
-        # Gravity points down (assuming ENU convention: +Z is up, so gravity is +Z)
-        F_gravity_world = np.array([0.0, 0.0, self.params.mtom * self.params.gravity])
+        F_total_world = rotate_vector_by_quaternion(pose_unit, F_total_body)
+        # Gravity points down in ENU (+Z up), so the force is along -Z.
+        F_gravity_world = np.array([0.0, 0.0, -self.params.mtom * self.params.gravity])
         F_world = F_total_world + F_gravity_world
         M_body = M_aero_body + ext_M_body
 
@@ -151,7 +149,7 @@ class Airplane():
 
     def _dynamics(self, state: AirplaneState, controls: ControlInputs, ext_F_body: np.ndarray, ext_M_body: np.ndarray) -> AirplaneState:
         """Calculate state derivatives for integration."""
-        
+
         # 1. Calculate forces and moments (aerodynamics + thrust + gravity)
         F_world, M_body = self._calculate_forces_and_moments(state, controls, ext_F_body, ext_M_body)
         
@@ -163,8 +161,10 @@ class Airplane():
         angular_acceleration = self.J_inv @ (M_body - np.cross(omega, self.J @ omega))
         
         # 4. Quaternion kinematics: dq/dt = 0.5 * q * omega_quat
+        pose_unit = normalize_quaternion(state.pose)
+
         omega_quat = np.quaternion(0, *omega)
-        pose_derivative = 0.5 * state.pose * omega_quat
+        pose_derivative = 0.5 * pose_unit * omega_quat
         
         return AirplaneState(
             position=state.velocity,        # dx/dt = velocity
@@ -176,12 +176,14 @@ class Airplane():
 
     def _add_states(self, state: AirplaneState, derivative: AirplaneState, scale: float) -> AirplaneState:
         """Add scaled derivative to state for RK4 intermediate steps."""
-        return AirplaneState(
+        intermediate_state = AirplaneState(
             position=state.position + scale * derivative.position,
             velocity=state.velocity + scale * derivative.velocity,
             pose=state.pose + scale * derivative.pose,
             angular_rates=state.angular_rates + scale * derivative.angular_rates
         )
+
+        return self._normalize_state_pose(intermediate_state)
     
     def _rk4_combine(self, state: AirplaneState, k1: AirplaneState, k2: AirplaneState, 
                 k3: AirplaneState, k4: AirplaneState, dt: float) -> AirplaneState:
@@ -192,3 +194,7 @@ class Airplane():
             pose=state.pose + (dt/6) * (k1.pose + 2*k2.pose + 2*k3.pose + k4.pose),
             angular_rates=state.angular_rates + (dt/6) * (k1.angular_rates + 2*k2.angular_rates + 2*k3.angular_rates + k4.angular_rates)
         )
+
+    def _normalize_state_pose(self, state: AirplaneState) -> AirplaneState:
+        pose_unit = normalize_quaternion(state.pose)
+        return replace(state, pose=pose_unit)
