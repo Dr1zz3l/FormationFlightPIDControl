@@ -41,9 +41,10 @@ def rotate_vector_by_quaternion(pose_q, vector) -> np.ndarray:
     
     # Normalize quaternion
     pose_q_norm = np.abs(pose_q)
-    if pose_q_norm == 0:
-        raise ValueError("Cannot normalize zero quaternion")
-    pose_q = pose_q / pose_q_norm
+    if pose_q_norm < 1e-12:
+        pose_q = quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
+    else:
+        pose_q = pose_q / pose_q_norm
     
     # Convert vector to numpy array
     vector = np.asarray(vector, dtype=float)

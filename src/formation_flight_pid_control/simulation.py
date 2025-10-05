@@ -80,19 +80,10 @@ class Airplane():
         k3 = self._dynamics(self._add_states(current_state, k2, dt/2), control_inputs, ext_F_body, ext_M_body)
         k4 = self._dynamics(self._add_states(current_state, k3, dt), control_inputs, ext_F_body, ext_M_body)
         
-        # Combine using RK4 formula
-        new_state = self._rk4_combine(current_state, k1, k2, k3, k4, dt)
-        
-        # Normalize quaternion to prevent drift
-        pose_norm = np.abs(new_state.pose)
-        if pose_norm < 1e-12:  # Quaternion became degenerate
-            # Reset to identity quaternion if corrupted
-            normalized_pose = quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
-        else:
-            normalized_pose = new_state.pose / pose_norm
-        new_state = replace(new_state, pose=normalized_pose)
-
-        self.state = new_state
+        # Combine using RK4 formula and normalize the quaternion component
+        self.state = self._normalize_state_pose(
+            self._rk4_combine(current_state, k1, k2, k3, k4, dt)
+        )
 
     def _calculate_forces_and_moments(self, state: AirplaneState, controls: ControlInputs, ext_F_body: np.ndarray, ext_M_body: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Calculate aerodynamic and thrust forces and moments."""
@@ -193,12 +184,14 @@ class Airplane():
 
     def _add_states(self, state: AirplaneState, derivative: AirplaneState, scale: float) -> AirplaneState:
         """Add scaled derivative to state for RK4 intermediate steps."""
-        return AirplaneState(
+        intermediate_state = AirplaneState(
             position=state.position + scale * derivative.position,
             velocity=state.velocity + scale * derivative.velocity,
             pose=state.pose + scale * derivative.pose,
             angular_rates=state.angular_rates + scale * derivative.angular_rates
         )
+
+        return self._normalize_state_pose(intermediate_state)
     
     def _rk4_combine(self, state: AirplaneState, k1: AirplaneState, k2: AirplaneState, 
                 k3: AirplaneState, k4: AirplaneState, dt: float) -> AirplaneState:
@@ -209,3 +202,11 @@ class Airplane():
             pose=state.pose + (dt/6) * (k1.pose + 2*k2.pose + 2*k3.pose + k4.pose),
             angular_rates=state.angular_rates + (dt/6) * (k1.angular_rates + 2*k2.angular_rates + 2*k3.angular_rates + k4.angular_rates)
         )
+
+    def _normalize_state_pose(self, state: AirplaneState) -> AirplaneState:
+        pose_norm = np.abs(state.pose)
+        if pose_norm < 1e-12:
+            normalized_pose = quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
+        else:
+            normalized_pose = state.pose / pose_norm
+        return replace(state, pose=normalized_pose)
