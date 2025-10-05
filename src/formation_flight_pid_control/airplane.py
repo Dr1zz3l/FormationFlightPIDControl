@@ -7,10 +7,9 @@ from typing import Optional
 import numpy as np
 import quaternion
 
-from .geometry import rotate_body_to_earth, rotate_earth_to_body, _normalized_quaternion
+from .geometry import rotate_body_to_earth, rotate_earth_to_body, _normalized_quaternion, AIRCRAFT_GEOMETRY_BODY
 from .params import Params
 from .utils import clamp
-
 
 @dataclass
 class AirplaneState:
@@ -41,6 +40,16 @@ class Airplane6DoFLite:
             velocity=np.array([26.0, 0.0, 0.0]),
             angular_rates=np.array([0.0, 0.0, 0.0]),
         )
+
+        self.geometry_body = AIRCRAFT_GEOMETRY_BODY
+
+    def wingtips_world(self) -> tuple[np.ndarray, np.ndarray]:
+        quat = np.array([self.state.pose.w, self.state.pose.x, self.state.pose.y, self.state.pose.z])
+        tip_R_b = np.array([0.0,  +self.params.b_span/2.0, 0.0])
+        tip_L_b = np.array([0.0,  -self.params.b_span/2.0, 0.0])
+        tip_R_e = self.state.position + rotate_body_to_earth(quat, tip_R_b)
+        tip_L_e = self.state.position + rotate_body_to_earth(quat, tip_L_b)
+        return tip_L_e, tip_R_e
 
     def forces_and_moments(
         self,
