@@ -7,7 +7,7 @@ from typing import NamedTuple, Optional
 import numpy as np
 import quaternion
 
-from .geometry import rotate_vector_by_quaternion
+from .geometry import normalize_quaternion, rotate_vector_by_quaternion
 from .params import Params
 from .utils import clamp
 
@@ -90,11 +90,7 @@ class Airplane():
         
         # Unpack state and control inputs
         # Transform world velocity to body frame (world to body rotation)
-        pose_norm = np.abs(state.pose)
-        if pose_norm < 1e-12:
-            pose_unit = quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
-        else:
-            pose_unit = state.pose / pose_norm
+        pose_unit = normalize_quaternion(state.pose)
 
         V_body = rotate_vector_by_quaternion(pose_unit.conjugate(), state.velocity)
         
@@ -144,8 +140,8 @@ class Airplane():
 
         # Convert total force to world frame (body to world rotation)
         F_total_world = rotate_vector_by_quaternion(pose_unit, F_total_body)
-        # Gravity points down (assuming ENU convention: +Z is up, so gravity is +Z)
-        F_gravity_world = np.array([0.0, 0.0, self.params.mtom * self.params.gravity])
+        # Gravity points down in ENU (+Z up), so the force is along -Z.
+        F_gravity_world = np.array([0.0, 0.0, -self.params.mtom * self.params.gravity])
         F_world = F_total_world + F_gravity_world
         M_body = M_aero_body + ext_M_body
 
@@ -165,11 +161,7 @@ class Airplane():
         angular_acceleration = self.J_inv @ (M_body - np.cross(omega, self.J @ omega))
         
         # 4. Quaternion kinematics: dq/dt = 0.5 * q * omega_quat
-        pose_norm = np.abs(state.pose)
-        if pose_norm < 1e-12:
-            pose_unit = quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
-        else:
-            pose_unit = state.pose / pose_norm
+        pose_unit = normalize_quaternion(state.pose)
 
         omega_quat = np.quaternion(0, *omega)
         pose_derivative = 0.5 * pose_unit * omega_quat
@@ -204,9 +196,5 @@ class Airplane():
         )
 
     def _normalize_state_pose(self, state: AirplaneState) -> AirplaneState:
-        pose_norm = np.abs(state.pose)
-        if pose_norm < 1e-12:
-            normalized_pose = quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
-        else:
-            normalized_pose = state.pose / pose_norm
-        return replace(state, pose=normalized_pose)
+        pose_unit = normalize_quaternion(state.pose)
+        return replace(state, pose=pose_unit)
