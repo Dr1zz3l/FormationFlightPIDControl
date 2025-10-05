@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import List
 
+import numpy as np
+
 from .controllers import PIDFollower
 from .formation import build_formation
 from .params import Params
@@ -54,18 +56,21 @@ def demo_sim() -> None:
 
         for _ in range(DRAW_EVERY):
             leader = formation[0]
-            u_leader = PIDFollower.pilot_leader(t, leader.sim.state)
-            leader.sim.step(u_leader, dt)
-            leader.throttle_history.append(u_leader[0])
+            leader_controls = PIDFollower.pilot_leader(t, leader.sim.state)
+            leader.sim.step(dt, leader_controls)
+            leader.throttle_history.append(leader_controls.throttle)
 
             for follower, target in zip(formation[1:], formation[:-1]):
                 if follower.pid is None:
                     raise ValueError("Follower missing PID controller")
-                u_cmd, force, moment = follower.pid.pilot_follower(
+                controls, force, moment = follower.pid.pilot_follower(
                     t, follower.sim.state, target.sim.state, dt
                 )
-                follower.sim.step(u_cmd, dt, ext_F_body=force, ext_M_body=moment)
-                follower.throttle_history.append(u_cmd[0])
+                # Handle None external forces/moments
+                ext_F = force if force is not None else np.zeros(3)
+                ext_M = moment if moment is not None else np.zeros(3)
+                follower.sim.step(dt, controls, ext_F_body=ext_F, ext_M_body=ext_M)
+                follower.throttle_history.append(controls.throttle)
 
             t += dt
             time_history.append(t)

@@ -9,12 +9,12 @@ import numpy as np
 from .geometry import (
     AIRCRAFT_GEOMETRY_BODY,
     NED_TO_ENU,
-    rotate_body_to_earth,
+    rotate_vector_by_quaternion,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - imports for type checking only
     from .controllers import PIDFollower
-    from .simulation import Airplane6DoFLite
+    from .simulation import Airplane
 
 
 MAX_TRAIL_LENGTH = 500
@@ -37,7 +37,7 @@ class Trail:
 
 @dataclass
 class AircraftVisual:
-    sim: "Airplane6DoFLite"
+    sim: "Airplane"
     label: str
     color: str
     pid: Optional["PIDFollower"] = None
@@ -117,13 +117,20 @@ def collect_line_artists(formation: Sequence[AircraftVisual]) -> list[Any]:
     return artists
 
 
-def body_to_world_points(sim: Airplane6DoFLite) -> Dict[str, np.ndarray]:
-    x, y, z = sim.state[0:3]
-    quat = sim.state[6:10]
-    pos_ned = np.array([x, y, z])
+def body_to_world_points(sim: "Airplane") -> Dict[str, np.ndarray]:
+    """Transform aircraft geometry from body frame to world coordinates for visualization."""
+    state = sim.state
+    pos_ned = state.position
+    quat = state.pose  # Updated field name
+    
+    # Center point for trail
     points = {"center": NED_TO_ENU @ pos_ned}
+    
+    # Transform all aircraft geometry points
     for name, body_vec in AIRCRAFT_GEOMETRY_BODY.items():
-        ned_point = rotate_body_to_earth(quat, body_vec) + pos_ned
+        # Use new geometry function
+        world_point = rotate_vector_by_quaternion(quat, body_vec)
+        ned_point = world_point + pos_ned
         points[name] = NED_TO_ENU @ ned_point
     return points
 

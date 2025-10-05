@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import numpy as np
 
 
 @dataclass
@@ -35,9 +36,7 @@ class Params:
     Bq: float = 2.8
     Br: float = 2.0
 
-    Jx: float = 0.35
-    Jy: float = 0.45
-    Jz: float = 0.60
+    J: np.ndarray = field(default_factory=lambda: np.diag([0.35, 0.45, 0.60]))
 
     v_eps: float = 1e-3
     cth_eps: float = 1e-3

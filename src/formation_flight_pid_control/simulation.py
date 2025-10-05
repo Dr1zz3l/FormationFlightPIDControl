@@ -1,176 +1,194 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
+from dataclasses import dataclass, replace
+from typing import Optional, NamedTuple
 
 import numpy as np
 import quaternion
 
-from .geometry import rotate_body_to_earth, rotate_earth_to_body, _normalized_quaternion
+from .geometry import rotate_vector_by_quaternion
 from .params import Params
 from .utils import clamp
 
 
-class Airplane6DoFLite:
-    """Lightweight 6-DoF rigid-body aircraft model.
+class ControlInputs(NamedTuple):
+    """Aircraft control inputs from pilot or autopilot."""
+    throttle: float    # Engine throttle [0, 1]
+    roll_cmd: float    # Roll command [-1, 1] 
+    pitch_cmd: float   # Pitch command [-1, 1]
+    yaw_cmd: float     # Yaw command [-1, 1]
+    
+    @classmethod
+    def from_array(cls, u_array: np.ndarray) -> 'ControlInputs':
+        """Create ControlInputs from 4-element numpy array."""
+        if len(u_array) != 4:
+            raise ValueError(f"Control array must have 4 elements, got {len(u_array)}")
+        return cls(*u_array)
 
-    The model integrates translational and rotational dynamics driven by
-    aerodynamic lift, drag, side-force, thrust, and simple control-derived
-    moments. Aerodynamic coefficients follow a quasi-steady, low-angle
-    approximation with a linear lift curve up to a prescribed stall angle and
-    induced drag based on span efficiency. Attitude is represented with
-    quaternions and integrated alongside angular rates to avoid gimbal lock.
-    """
-    def __init__(self, aircraft: Params):
-        self.aircraft = aircraft
-        self.J = np.diag([aircraft.Jx, aircraft.Jy, aircraft.Jz])
-        self.Jinv = np.diag([1.0 / aircraft.Jx, 1.0 / aircraft.Jy, 1.0 / aircraft.Jz])
-        self.state = np.zeros(13)
-        self.state[2] = -700.0
-        self.state[0] = 200.0
-        self.state[1] = 200.0
-        self.state[3] = 26.0
-        self.state[6] = 1.0
 
-    def forces_and_moments(
-        self,
-        state: np.ndarray,
-        u: np.ndarray,
-        ext_F_body: Optional[np.ndarray] = None,
-        ext_M_body: Optional[np.ndarray] = None,
-    ):
-        aircraft = self.aircraft
-        x, y, z, vx, vy, vz, qw, qx, qy, qz, p_rate, q_rate, r_rate = state
-        throttle, roll_cmd, pitch_cmd, yaw_cmd = u
+@dataclass(frozen=True)
+class AirplaneState:
+    position: np.ndarray
+    pose: np.quaternion
+    velocity: np.ndarray
+    angular_rates: np.ndarray
 
-        quat_array = np.array([qw, qx, qy, qz])
-        quat = _normalized_quaternion(quat_array)
-        quat_array = np.array([quat.w, quat.x, quat.y, quat.z])
-        vel_body = rotate_earth_to_body(quat_array, np.array([vx, vy, vz]))
-        u_body, v_body, w_body = vel_body
-        vel_norm = max(aircraft.v_eps, float(np.linalg.norm(vel_body)))
-
-        alpha = math.atan2(w_body, u_body)
-        beta = math.asin(clamp(v_body / vel_norm, -1.0, 1.0))
-
-        # Dynamic pressure for wing forces that scale with velocity squared.
-        qbar = 0.5 * aircraft.rho * vel_norm**2
-
-        T_force = aircraft.thrust_max * clamp(throttle, 0.0, 1.0)
-        F_thrust_body = np.array([T_force, 0.0, 0.0])
-
-        V_hat = vel_body / vel_norm
-
-        # Lift follows a linear curve up to the stall angle, then tapers.
-        if alpha <= aircraft.alpha_stall:
-            CL_tot = aircraft.CL0 + aircraft.CL_alpha * alpha
+class Airplane():
+    def __init__(self, params: Params, state: AirplaneState = None) -> None:
+        
+        self.params = params
+        
+        # Inertia matrix and its inverse for rotational dynamics
+        # Use the J matrix from params, or create individual components
+        if hasattr(params, 'J') and isinstance(params.J, np.ndarray):
+            self.J = params.J
+            self.J_inv = np.linalg.inv(self.J)
         else:
-            CL_tot = aircraft.CL_max * (
-                1 - (abs(alpha) - aircraft.alpha_stall) / (np.pi / 2 - aircraft.alpha_stall)
-            )
-            CL_tot *= math.copysign(1.0, alpha)
-            print("STALL")
-
-        L_force = CL_tot * qbar * aircraft.S_wing_ref_area
-        lift_dir = np.array([V_hat[2], 0, -V_hat[0]])
-        lift_dir /= np.linalg.norm(lift_dir)
-        F_lift_body = L_force * lift_dir
-
-        # Side-force from sideslip is aligned with the lateral unit vector.
-        CY_tot = aircraft.CY_beta * beta
-        Y_force = CY_tot * qbar * aircraft.S_wing_ref_area
-        side_dir = np.cross(V_hat, lift_dir)
-        side_dir /= np.linalg.norm(side_dir)
-        F_side_body = Y_force * side_dir
-
-        # Total drag is zero-lift plus induced drag from lift production.
-        CD_induced = CL_tot**2 / (np.pi * aircraft.AR * aircraft.e_const)
-        CD_tot = aircraft.CD0 + CD_induced
-        D_force = CD_tot * qbar * aircraft.S_wing_ref_area
-        drag_dir = -V_hat
-        drag_dir /= np.linalg.norm(drag_dir)
-        F_drag_body = D_force * drag_dir
-
-        # Sum of aerodynamic and thrust forces expressed in the body frame.
-        F_body = F_side_body + F_thrust_body + F_lift_body + F_drag_body
-
-        if ext_F_body is not None:
-            F_body = F_body + ext_F_body
-
-        F_earth = rotate_body_to_earth(quat_array, F_body) + np.array(
-            [0.0, 0.0, aircraft.mtom * aircraft.gravity]
+            # Fallback: use individual moments of inertia
+            Jx, Jy, Jz = 0.35, 0.45, 0.60  # Default values
+            self.J = np.diag([Jx, Jy, Jz])
+            self.J_inv = np.diag([1.0/Jx, 1.0/Jy, 1.0/Jz])
+        
+        self.state = state if state is not None else AirplaneState(
+            position=np.array([200.0, 200.0, -700.0]),
+            pose=np.quaternion(1.0, 0.0, 0.0, 0.0),
+            velocity=np.array([26.0, 0.0, 0.0]),
+            angular_rates=np.array([0.0, 0.0, 0.0]),
         )
 
-        M_cmd = np.array(
-            [
-                aircraft.K_roll * clamp(roll_cmd, -1.0, 1.0),
-                aircraft.K_pitch * clamp(pitch_cmd, -1.0, 1.0),
-                aircraft.K_yaw * clamp(yaw_cmd, -1.0, 1.0),
-            ]
-        ) * qbar
-        # Linear damping moments oppose rotation about each axis.
-        M_damp = -np.array([aircraft.Bp * p_rate, aircraft.Bq * q_rate, aircraft.Br * r_rate])
-
-        C_M = aircraft.CMAC + (aircraft.x_cg - aircraft.x_ac) / aircraft.c_bar * CL_tot
-        M_pitch_CG_AC = qbar * aircraft.S_wing_ref_area * aircraft.c_bar * C_M
-        M_CG_AC = np.array([0.0, M_pitch_CG_AC, 0.0])
-
-        Cl_beta = aircraft.Cl_beta
-        L_roll = Cl_beta * beta * qbar * aircraft.S_wing_ref_area * aircraft.b_span
-        M_lateral_body = np.array([L_roll, 0.0, 0.0])
-
-        # Net moments include control commands, damping, and aerodynamic coupling.
-        M_body = M_damp + M_cmd + M_CG_AC + M_lateral_body
-
-        if ext_M_body is not None:
-            M_body = M_body + ext_M_body
-
-        return F_earth, M_body
-
-    def f(
-        self,
-        state: np.ndarray,
-        u: np.ndarray,
-        ext_F_body: Optional[np.ndarray] = None,
-        ext_M_body: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        aircraft = self.aircraft
-        x, y, z, vx, vy, vz, qw, qx, qy, qz, p_rate, q_rate, r_rate = state
-
-        F_earth, M_body = self.forces_and_moments(state, u, ext_F_body, ext_M_body)
-
-        # Newton's second law for translational acceleration in earth axes.
-        accel_world = F_earth / aircraft.mtom
-
-        omega = np.array([p_rate, q_rate, r_rate])
-        # Euler's equation for rotational acceleration with gyroscopic coupling.
-        omega_dot = self.Jinv @ (M_body - np.cross(omega, self.J @ omega))
-
-        quat = _normalized_quaternion([qw, qx, qy, qz])
-        omega_quat = quaternion.quaternion(0.0, *omega)
-        quat_dot = 0.5 * quat * omega_quat
-
-        xdot = np.zeros_like(state)
-        xdot[0:3] = np.array([vx, vy, vz])
-        xdot[3:6] = accel_world
-        xdot[6:10] = np.array([quat_dot.w, quat_dot.x, quat_dot.y, quat_dot.z])
-        xdot[10:13] = omega_dot
-        return xdot
-
     def step(
-        self,
-        u: np.ndarray,
-        dt: float,
-        ext_F_body: Optional[np.ndarray] = None,
-        ext_M_body: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        state = self.state
-        k1 = self.f(state, u, ext_F_body, ext_M_body)
-        k2 = self.f(state + 0.5 * dt * k1, u, ext_F_body, ext_M_body)
-        k3 = self.f(state + 0.5 * dt * k2, u, ext_F_body, ext_M_body)
-        k4 = self.f(state + dt * k3, u, ext_F_body, ext_M_body)
-        self.state = state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+            self, 
+            dt: float, 
+            control_inputs: ControlInputs, 
+            ext_F_body: np.ndarray = np.zeros(3), 
+            ext_M_body: np.ndarray = np.zeros(3),
+            ) -> None:
+        
+        """Advance the simulation by one time step using RK4 integration."""
 
-        quat = _normalized_quaternion(self.state[6:10])
-        self.state[6:10] = np.array([quat.w, quat.x, quat.y, quat.z])
-        return self.state.copy()
+        current_state = self.state
+        
+        # Calculate the 4 RK4 slopes
+        k1 = self._dynamics(current_state, control_inputs, ext_F_body, ext_M_body)
+        k2 = self._dynamics(self._add_states(current_state, k1, dt/2), control_inputs, ext_F_body, ext_M_body)
+        k3 = self._dynamics(self._add_states(current_state, k2, dt/2), control_inputs, ext_F_body, ext_M_body)
+        k4 = self._dynamics(self._add_states(current_state, k3, dt), control_inputs, ext_F_body, ext_M_body)
+        
+        # Combine using RK4 formula
+        new_state = self._rk4_combine(current_state, k1, k2, k3, k4, dt)
+        
+        # Normalize quaternion to prevent drift
+        pose_norm = np.abs(new_state.pose)
+        if pose_norm < 1e-12:  # Quaternion became degenerate
+            # Reset to identity quaternion if corrupted
+            normalized_pose = quaternion.quaternion(1.0, 0.0, 0.0, 0.0)
+        else:
+            normalized_pose = new_state.pose / pose_norm
+        new_state = replace(new_state, pose=normalized_pose)
+
+        self.state = new_state
+
+    def _calculate_forces_and_moments(self, state: AirplaneState, controls: ControlInputs, ext_F_body: np.ndarray, ext_M_body: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Calculate aerodynamic and thrust forces and moments."""
+        
+        # Unpack state and control inputs
+        # Transform world velocity to body frame (world to body rotation)
+        V_body = rotate_vector_by_quaternion(state.pose.conjugate(), state.velocity)
+        
+        # Calculate airspeed with safety check
+        airspeed = np.linalg.norm(V_body)
+        if airspeed < 1e-6:  # Avoid division by zero
+            alpha = 0.0
+            beta = 0.0
+        else:
+            alpha = math.atan2(-V_body[2], V_body[0])  # Angle of attack
+            beta = math.asin(clamp(V_body[1] / airspeed, -1.0, 1.0))  # Sideslip angle
+
+        # Simplified aerodynamic coefficients using available parameters
+        C_L = self.params.CL0 + self.params.CL_alpha * alpha
+        C_D = self.params.CD0 + 0.1 * alpha**2  # Simple induced drag
+        C_Y = self.params.CY_beta * beta
+        
+        # Moment coefficients
+        C_l = self.params.Cl_beta * beta  # Roll moment from sideslip
+        C_m = self.params.CMAC  # Pitching moment (simplified)
+        C_n = -0.1 * beta  # Yaw stability (negative for weathercock stability)
+
+        # Dynamic pressure
+        q_dyn = 0.5 * self.params.rho * np.linalg.norm(V_body)**2
+        S = self.params.S_wing_ref_area
+        b = self.params.b_span
+
+        # Aerodynamic forces in body frame (X=forward, Y=right, Z=down)
+        # Standard aircraft body axes: drag opposes velocity, lift is perpendicular up
+        F_aero_body = np.array([
+            -q_dyn * S * C_D,     # Drag opposes forward motion
+            q_dyn * S * C_Y,      # Side force (positive = right)
+            -q_dyn * S * C_L      # Lift (negative Z = up in NED convention)
+        ])
+
+        # Aerodynamic moments in body frame (L=roll, M=pitch, N=yaw)
+        M_aero_body = np.array([
+            q_dyn * S * b * C_l,                    # Roll moment (use wingspan b)
+            q_dyn * S * self.params.c_bar * C_m,    # Pitch moment (use chord c_bar)
+            q_dyn * S * b * C_n                     # Yaw moment (use wingspan b)
+        ])  
+
+        # Thrust force in body frame
+        thrust = clamp(controls.throttle * self.params.thrust_max, 0.0, self.params.thrust_max)
+        F_thrust_body = np.array([thrust, 0.0, 0.0])
+        F_total_body = F_aero_body + F_thrust_body + ext_F_body
+
+        # Convert total force to world frame (body to world rotation)
+        F_total_world = rotate_vector_by_quaternion(state.pose, F_total_body)
+        # Gravity points down (assuming ENU convention: +Z is up, so gravity is +Z)
+        F_gravity_world = np.array([0.0, 0.0, self.params.mtom * self.params.gravity])
+        F_world = F_total_world + F_gravity_world
+        M_body = M_aero_body + ext_M_body
+
+        return F_world, M_body
+
+    def _dynamics(self, state: AirplaneState, controls: ControlInputs, ext_F_body: np.ndarray, ext_M_body: np.ndarray) -> AirplaneState:
+        """Calculate state derivatives for integration."""
+        
+        # 1. Calculate forces and moments (aerodynamics + thrust + gravity)
+        F_world, M_body = self._calculate_forces_and_moments(state, controls, ext_F_body, ext_M_body)
+        
+        # 2. Translational dynamics: F = ma -> a = F/m
+        acceleration_world = F_world / self.params.mtom
+        
+        # 3. Rotational dynamics: M = J*omega_dot + omega x (J*omega)
+        omega = state.angular_rates
+        angular_acceleration = self.J_inv @ (M_body - np.cross(omega, self.J @ omega))
+        
+        # 4. Quaternion kinematics: dq/dt = 0.5 * q * omega_quat
+        omega_quat = np.quaternion(0, *omega)
+        pose_derivative = 0.5 * state.pose * omega_quat
+        
+        return AirplaneState(
+            position=state.velocity,        # dx/dt = velocity
+            velocity=acceleration_world,    # dv/dt = acceleration  
+            pose=pose_derivative,          # dq/dt = quaternion derivative
+            angular_rates=angular_acceleration  # domega/dt = angular acceleration
+        )
+
+
+    def _add_states(self, state: AirplaneState, derivative: AirplaneState, scale: float) -> AirplaneState:
+        """Add scaled derivative to state for RK4 intermediate steps."""
+        return AirplaneState(
+            position=state.position + scale * derivative.position,
+            velocity=state.velocity + scale * derivative.velocity,
+            pose=state.pose + scale * derivative.pose,
+            angular_rates=state.angular_rates + scale * derivative.angular_rates
+        )
+    
+    def _rk4_combine(self, state: AirplaneState, k1: AirplaneState, k2: AirplaneState, 
+                k3: AirplaneState, k4: AirplaneState, dt: float) -> AirplaneState:
+        """Apply RK4 weighted combination formula."""
+        return AirplaneState(
+            position=state.position + (dt/6) * (k1.position + 2*k2.position + 2*k3.position + k4.position),
+            velocity=state.velocity + (dt/6) * (k1.velocity + 2*k2.velocity + 2*k3.velocity + k4.velocity),
+            pose=state.pose + (dt/6) * (k1.pose + 2*k2.pose + 2*k3.pose + k4.pose),
+            angular_rates=state.angular_rates + (dt/6) * (k1.angular_rates + 2*k2.angular_rates + 2*k3.angular_rates + k4.angular_rates)
+        )
