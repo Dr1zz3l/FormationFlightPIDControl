@@ -7,11 +7,11 @@ from dataclasses import dataclass
 class Params:
     mtom: float = 16.0
     gravity: float = 9.81
-    S_wing_ref_area: float = 0.6
-    c_bar: float = 0.5
+    S_wing_ref_area: float = 12.0
+    c_bar: float = 1.2
     x_ac: float = 0.2
     x_cg: float = 0.15
-    b_span: float = 2.4
+    b_span: float = 10.0
     AR: float = b_span / c_bar
     rho: float = 1.225
     e_const: float = 0.6
@@ -20,7 +20,7 @@ class Params:
     thrust_max: float = 35.0
 
     CL0: float = 0.0
-    CL_alpha: float = 5.0
+    CL_alpha: float = 5.5
     CY_beta: float = -0.9
     CD0: float = 0.01
     CMAC: float = 0.05
@@ -41,3 +41,12 @@ class Params:
 
     v_eps: float = 1e-3
     cth_eps: float = 1e-3
+
+    # --- Wake / vortex model params ---
+    wake_enable: bool = True
+    wake_core_radius: float = 2.0
+    wake_decay_time: float = 8.0
+    wake_segment_length: float = 5.0
+    wake_history_len: int = 80
+    wake_gamma_scale: float = 1.0
+    wake_axial_decay_len: float = 150.0
