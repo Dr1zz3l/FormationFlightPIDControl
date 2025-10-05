@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import List
 
+import numpy as np
+
 from .controllers import PIDFollower
 from .formation import build_formation
 from .params import Params
@@ -24,7 +26,17 @@ def demo_sim() -> None:
     from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - imported for side effects
 
     params = Params()
-    formation = build_formation(params)
+    
+    # Define formation configuration
+    leader_config = ("Leader", "k")
+    follower_specs = [
+        ("Follower 1", "r", np.array([-120.0, -200.0, 100.0])),
+        ("Follower 2", "g", np.array([-400.0, -150.0, -150.0])),
+        ("Follower 3", "b", np.array([-600.0, -500.0, 0.0])),
+        ("Follower 4", "orange", np.array([-600.0, -500.0, 0.0])),
+    ]
+    
+    formation = build_formation(params, leader_config, follower_specs)
 
     dt = 0.05  # Restored original timestep - quaternion integration fixed
     Tfinal = 10000.0
