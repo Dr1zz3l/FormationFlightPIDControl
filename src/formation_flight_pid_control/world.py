@@ -57,10 +57,10 @@ class World:
         for follower, target in zip(self.formation[1:], self.formation[:-1]):
             if follower.pid is None:
                 raise ValueError("Follower missing PID controller")
-            u_cmd, force, moment = follower.pid.pilot_follower(
+            u_cmd = follower.pid.pilot_follower(
                 self.t, follower.sim.state, target.sim.state, dt
             )
-            follower.sim.step(u_cmd, dt, ext_F_body=force, ext_M_body=moment)
+            follower.sim.step(u_cmd, dt)
             follower.throttle_history.append(u_cmd[0])
 
         self.t += dt
@@ -72,7 +72,3 @@ class World:
     def get_time(self) -> float:
         """Get current simulation time."""
         return self.t
-
-
-
-    
