@@ -123,40 +123,6 @@ class FormationFlightSimulation:
         self.fig._formation_animation = animation  # type: ignore[attr-defined]
         
         plt.show()
-        
-    def run_headless(self, max_steps: int = None) -> dict:
-        """Run simulation without visualization for testing/analysis.
-        
-        Args:
-            max_steps: Maximum number of steps to run (defaults to all)
-            
-        Returns:
-            Dictionary with simulation results
-        """
-        max_steps = max_steps or self.steps
-        
-        for step in range(min(max_steps, self.steps)):
-            if self.t >= self.tfinal:
-                break
-            self._simulation_step()
-        
-        # Return final positions and states
-        results = {
-            'final_time': self.t,
-            'steps_completed': step + 1,
-            'aircraft_states': []
-        }
-        
-        for aircraft in self.formation:
-            results['aircraft_states'].append({
-                'label': aircraft.label,
-                'position': aircraft.sim.state.position.copy(),
-                'velocity': aircraft.sim.state.velocity.copy(),
-                'pose': aircraft.sim.state.pose,
-                'angular_rates': aircraft.sim.state.angular_rates.copy()
-            })
-        
-        return results
 
 
 def demo_sim() -> None:
