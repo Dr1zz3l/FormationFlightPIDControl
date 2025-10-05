@@ -8,8 +8,6 @@ import numpy as np
 from matplotlib.animation import FuncAnimation
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 - imported for side effects
 
-from .controllers import PIDFollower
-from .formation import build_formation
 from .params import Params
 from .visualization import (
     attach_aircraft_lines,
@@ -18,6 +16,7 @@ from .visualization import (
     update_aircraft_visual,
     update_throttle_plot,
 )
+from .world import World
 
 
 class FormationFlightSimulation:
@@ -47,66 +46,49 @@ class FormationFlightSimulation:
         self.tfinal = tfinal
         self.draw_every = draw_every
         
-        # Build the formation
-        self.formation = build_formation(params, leader_config, follower_specs)
+        # Create the world with formation
+        self.world = World(params, leader_config, follower_specs)
         
         # Initialize simulation state
-        self.t = 0.0
         self.steps = int(tfinal / dt)
         self.time_history: List[float] = []
         
         # Initialize visualization
         self.fig, self.ax_3d, self.ax_throttle = configure_figure()
-        attach_aircraft_lines(self.ax_3d, self.ax_throttle, self.formation)
+        attach_aircraft_lines(self.ax_3d, self.ax_throttle, self.world.get_formation())
         
     def _init_animation(self):
         """Initialize animation frame."""
-        for member in self.formation:
+        formation = self.world.get_formation()
+        for member in formation:
             for line in member.line_handles.values():
                 line.set_data([], [])
                 line.set_3d_properties([])
             if member.throttle_line is not None:
                 member.throttle_line.set_data([], [])
-        return collect_line_artists(self.formation)
+        return collect_line_artists(formation)
 
     def _update_animation(self, _frame_index: int):
         """Update animation frame."""
-        if self.t >= self.tfinal:
+        if self.world.get_time() >= self.tfinal:
             plt.close(self.fig)
             return []
 
         # Run multiple simulation steps per animation frame
         for _ in range(self.draw_every):
-            self._simulation_step()
+            self.world.simulation_step(self.dt)
+            self.time_history.append(self.world.get_time())
 
         # Update visualization
-        for member in self.formation:
+        formation = self.world.get_formation()
+        for member in formation:
             update_aircraft_visual(member)
 
-        update_throttle_plot(self.ax_throttle, self.time_history, self.formation)
+        update_throttle_plot(self.ax_throttle, self.time_history, formation)
         self.ax_3d.set_box_aspect([1, 1, 1])
-        return collect_line_artists(self.formation)
+        return collect_line_artists(formation)
     
-    def _simulation_step(self):
-        """Execute a single simulation step for all aircraft."""
-        # Leader control
-        leader = self.formation[0]
-        u_leader = PIDFollower.pilot_leader(self.t, leader.sim.state)
-        leader.sim.step(u_leader, self.dt)
-        leader.throttle_history.append(u_leader[0])
 
-        # Follower control
-        for follower, target in zip(self.formation[1:], self.formation[:-1]):
-            if follower.pid is None:
-                raise ValueError("Follower missing PID controller")
-            u_cmd, force, moment = follower.pid.pilot_follower(
-                self.t, follower.sim.state, target.sim.state, self.dt
-            )
-            follower.sim.step(u_cmd, self.dt, ext_F_body=force, ext_M_body=moment)
-            follower.throttle_history.append(u_cmd[0])
-
-        self.t += self.dt
-        self.time_history.append(self.t)
 
     def run(self):
         """Run the formation flight simulation with visualization."""
