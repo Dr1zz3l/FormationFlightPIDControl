@@ -26,7 +26,7 @@ def demo_sim() -> None:
     params = Params()
     formation = build_formation(params)
 
-    dt = 0.05
+    dt = 0.05  # Restored original timestep - quaternion integration fixed
     Tfinal = 10000.0
     steps = int(Tfinal / dt)
     t = 0.0

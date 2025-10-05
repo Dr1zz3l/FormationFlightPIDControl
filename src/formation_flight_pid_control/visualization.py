@@ -118,12 +118,13 @@ def collect_line_artists(formation: Sequence[AircraftVisual]) -> list[Any]:
 
 
 def body_to_world_points(sim: Airplane6DoFLite) -> Dict[str, np.ndarray]:
-    x, y, z = sim.state[0:3]
-    quat = sim.state[6:10]
-    pos_ned = np.array([x, y, z])
+    position = sim.state.position
+    pose = sim.state.pose
+    pos_ned = position
+    quat_array = np.array([pose.w, pose.x, pose.y, pose.z])
     points = {"center": NED_TO_ENU @ pos_ned}
     for name, body_vec in AIRCRAFT_GEOMETRY_BODY.items():
-        ned_point = rotate_body_to_earth(quat, body_vec) + pos_ned
+        ned_point = rotate_body_to_earth(quat_array, body_vec) + pos_ned
         points[name] = NED_TO_ENU @ ned_point
     return points
 

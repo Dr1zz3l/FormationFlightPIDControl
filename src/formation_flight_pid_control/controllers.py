@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from .geometry import rotate_body_to_earth, rotate_earth_to_body
+from .simulation import AirplaneState
 
 
 class PIDFollower:
@@ -12,7 +13,7 @@ class PIDFollower:
         self.e_int_body = np.zeros(3)
 
     @staticmethod
-    def pilot_leader(t: float, state: np.ndarray) -> np.ndarray:
+    def pilot_leader(t: float, state: AirplaneState) -> np.ndarray:
         throttle = 0.5
         base_roll = 0.15
         base_yaw = 0.15
@@ -25,19 +26,19 @@ class PIDFollower:
     def pilot_follower(
         self,
         t: float,
-        state_f: np.ndarray,
-        state_L: np.ndarray,
+        state_f: AirplaneState,
+        state_L: AirplaneState,
         dt: float,
     ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
         offset_body = np.array([-60.0, -80.0, 0.0])
 
-        pos_F = state_f[0:3]
-        vel_F = state_f[3:6]
-        quat_f = state_f[6:10]
+        pos_F = state_f.position
+        vel_F = state_f.velocity
+        quat_f = np.array([state_f.pose.w, state_f.pose.x, state_f.pose.y, state_f.pose.z])
 
-        pos_L = state_L[0:3]
-        vel_L = state_L[3:6]
-        quat_L = state_L[6:10]
+        pos_L = state_L.position
+        vel_L = state_L.velocity
+        quat_L = np.array([state_L.pose.w, state_L.pose.x, state_L.pose.y, state_L.pose.z])
 
         pos_des = pos_L + rotate_body_to_earth(quat_L, offset_body)
 
@@ -95,8 +96,8 @@ class PIDFollower:
     def pilot_follower2(
         self,
         t: float,
-        state_f: np.ndarray,
-        state_L: np.ndarray,
+        state_f: AirplaneState,
+        state_L: AirplaneState,
         dt: float,
     ) -> Tuple[np.ndarray, Optional[np.ndarray], Optional[np.ndarray]]:
         return self.pilot_follower(t, state_f, state_L, dt)

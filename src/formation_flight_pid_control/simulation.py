@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 from typing import Optional
 
@@ -9,6 +10,14 @@ import quaternion
 from .geometry import rotate_body_to_earth, rotate_earth_to_body, _normalized_quaternion
 from .params import Params
 from .utils import clamp
+
+
+@dataclass
+class AirplaneState:
+    position: np.ndarray
+    pose: np.quaternion
+    velocity: np.ndarray
+    angular_rates: np.ndarray
 
 
 class Airplane6DoFLite:
@@ -21,34 +30,40 @@ class Airplane6DoFLite:
     induced drag based on span efficiency. Attitude is represented with
     quaternions and integrated alongside angular rates to avoid gimbal lock.
     """
-    def __init__(self, aircraft: Params):
-        self.aircraft = aircraft
-        self.J = np.diag([aircraft.Jx, aircraft.Jy, aircraft.Jz])
-        self.Jinv = np.diag([1.0 / aircraft.Jx, 1.0 / aircraft.Jy, 1.0 / aircraft.Jz])
-        self.state = np.zeros(13)
-        self.state[2] = -700.0
-        self.state[0] = 200.0
-        self.state[1] = 200.0
-        self.state[3] = 26.0
-        self.state[6] = 1.0
+    def __init__(self, params: Params, state: AirplaneState = None):
+        self.params = params
+        self.J = np.diag([params.Jx, params.Jy, params.Jz])
+        self.Jinv = np.diag([1.0 / params.Jx, 1.0 / params.Jy, 1.0 / params.Jz])
+
+        self.state = state if state is not None else AirplaneState(
+            position=np.array([200.0, 200.0, -700.0]),
+            pose=np.quaternion(1.0, 0.0, 0.0, 0.0),
+            velocity=np.array([26.0, 0.0, 0.0]),
+            angular_rates=np.array([0.0, 0.0, 0.0]),
+        )
 
     def forces_and_moments(
         self,
-        state: np.ndarray,
+        state: AirplaneState,
         u: np.ndarray,
         ext_F_body: Optional[np.ndarray] = None,
         ext_M_body: Optional[np.ndarray] = None,
     ):
-        aircraft = self.aircraft
-        x, y, z, vx, vy, vz, qw, qx, qy, qz, p_rate, q_rate, r_rate = state
+        aircraft = self.params
         throttle, roll_cmd, pitch_cmd, yaw_cmd = u
 
-        quat_array = np.array([qw, qx, qy, qz])
-        quat = _normalized_quaternion(quat_array)
+        # Extract state components in a clean way
+        position = state.position
+        velocity = state.velocity
+        pose = state.pose
+        angular_rates = state.angular_rates
+        
+        quat = _normalized_quaternion([pose.w, pose.x, pose.y, pose.z])
         quat_array = np.array([quat.w, quat.x, quat.y, quat.z])
-        vel_body = rotate_earth_to_body(quat_array, np.array([vx, vy, vz]))
+        vel_body = rotate_earth_to_body(quat_array, velocity)
         u_body, v_body, w_body = vel_body
         vel_norm = max(aircraft.v_eps, float(np.linalg.norm(vel_body)))
+        p_rate, q_rate, r_rate = angular_rates
 
         alpha = math.atan2(w_body, u_body)
         beta = math.asin(clamp(v_body / vel_norm, -1.0, 1.0))
@@ -129,33 +144,34 @@ class Airplane6DoFLite:
 
     def f(
         self,
-        state: np.ndarray,
+        state: AirplaneState,
         u: np.ndarray,
         ext_F_body: Optional[np.ndarray] = None,
         ext_M_body: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
-        aircraft = self.aircraft
-        x, y, z, vx, vy, vz, qw, qx, qy, qz, p_rate, q_rate, r_rate = state
+    ) -> AirplaneState:
+        aircraft = self.params
 
         F_earth, M_body = self.forces_and_moments(state, u, ext_F_body, ext_M_body)
 
         # Newton's second law for translational acceleration in earth axes.
         accel_world = F_earth / aircraft.mtom
 
-        omega = np.array([p_rate, q_rate, r_rate])
+        omega = state.angular_rates
         # Euler's equation for rotational acceleration with gyroscopic coupling.
         omega_dot = self.Jinv @ (M_body - np.cross(omega, self.J @ omega))
 
-        quat = _normalized_quaternion([qw, qx, qy, qz])
+        # For quaternion derivatives, use the standard quaternion kinematics
+        quat = _normalized_quaternion([state.pose.w, state.pose.x, state.pose.y, state.pose.z])
         omega_quat = quaternion.quaternion(0.0, *omega)
         quat_dot = 0.5 * quat * omega_quat
 
-        xdot = np.zeros_like(state)
-        xdot[0:3] = np.array([vx, vy, vz])
-        xdot[3:6] = accel_world
-        xdot[6:10] = np.array([quat_dot.w, quat_dot.x, quat_dot.y, quat_dot.z])
-        xdot[10:13] = omega_dot
-        return xdot
+        # Return the derivatives as an AirplaneState
+        return AirplaneState(
+            position=state.velocity,  # dx/dt = velocity
+            velocity=accel_world,     # dv/dt = acceleration
+            pose=quat_dot,           # dq/dt = quaternion derivative
+            angular_rates=omega_dot   # domega/dt = angular acceleration
+        )
 
     def step(
         self,
@@ -163,14 +179,43 @@ class Airplane6DoFLite:
         dt: float,
         ext_F_body: Optional[np.ndarray] = None,
         ext_M_body: Optional[np.ndarray] = None,
-    ) -> np.ndarray:
+    ) -> AirplaneState:
         state = self.state
         k1 = self.f(state, u, ext_F_body, ext_M_body)
-        k2 = self.f(state + 0.5 * dt * k1, u, ext_F_body, ext_M_body)
-        k3 = self.f(state + 0.5 * dt * k2, u, ext_F_body, ext_M_body)
-        k4 = self.f(state + dt * k3, u, ext_F_body, ext_M_body)
-        self.state = state + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
-
-        quat = _normalized_quaternion(self.state[6:10])
-        self.state[6:10] = np.array([quat.w, quat.x, quat.y, quat.z])
-        return self.state.copy()
+        k2 = self.f(self._add_state_derivative(state, k1, 0.5 * dt), u, ext_F_body, ext_M_body)
+        k3 = self.f(self._add_state_derivative(state, k2, 0.5 * dt), u, ext_F_body, ext_M_body)
+        k4 = self.f(self._add_state_derivative(state, k3, dt), u, ext_F_body, ext_M_body)
+        
+        self.state = self._rk4_combine(state, k1, k2, k3, k4, dt)
+        
+        # Ensure quaternion stays normalized
+        quat = _normalized_quaternion([self.state.pose.w, self.state.pose.x, self.state.pose.y, self.state.pose.z])
+        self.state.pose = quat
+        
+        return self.state
+    
+    def _add_state_derivative(self, state: AirplaneState, derivative: AirplaneState, dt: float) -> AirplaneState:
+        """Add a scaled derivative to a state for RK4 intermediate steps."""
+        # For quaternions, add the quaternion derivative and then normalize
+        new_pose = state.pose + dt * derivative.pose
+        new_pose = new_pose.normalized()  # Keep quaternion normalized
+        
+        return AirplaneState(
+            position=state.position + dt * derivative.position,
+            velocity=state.velocity + dt * derivative.velocity,
+            pose=new_pose,
+            angular_rates=state.angular_rates + dt * derivative.angular_rates
+        )
+    
+    def _rk4_combine(self, state: AirplaneState, k1: AirplaneState, k2: AirplaneState, k3: AirplaneState, k4: AirplaneState, dt: float) -> AirplaneState:
+        """Combine RK4 derivatives with proper quaternion integration."""
+        # Standard RK4 combination for quaternions (treating them as 4D vectors temporarily)
+        new_pose = state.pose + (dt/6) * (k1.pose + 2*k2.pose + 2*k3.pose + k4.pose)
+        new_pose = new_pose.normalized()  # Renormalize after integration
+        
+        return AirplaneState(
+            position=state.position + (dt/6) * (k1.position + 2*k2.position + 2*k3.position + k4.position),
+            velocity=state.velocity + (dt/6) * (k1.velocity + 2*k2.velocity + 2*k3.velocity + k4.velocity),
+            pose=new_pose,
+            angular_rates=state.angular_rates + (dt/6) * (k1.angular_rates + 2*k2.angular_rates + 2*k3.angular_rates + k4.angular_rates)
+        )

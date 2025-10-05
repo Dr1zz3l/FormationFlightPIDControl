@@ -27,7 +27,8 @@ def build_formation(aircraft_params: Params) -> List[AircraftVisual]:
     formation = [leader]
     for label, color, offset in follower_specs:
         sim = Airplane6DoFLite(aircraft_params)
-        sim.state[0:3] += offset
+        # Update the position using the new AirplaneState structure
+        sim.state.position += offset
         formation.append(
             AircraftVisual(sim=sim, label=label, color=color, pid=PIDFollower())
         )
