@@ -4,8 +4,8 @@ from typing import Optional, Tuple
 
 import numpy as np
 
+from .airplane import AirplaneState
 from .geometry import rotate_body_to_earth, rotate_earth_to_body
-from .simulation import AirplaneState
 
 
 class PIDFollower:

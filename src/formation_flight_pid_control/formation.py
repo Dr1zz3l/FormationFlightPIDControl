@@ -4,9 +4,9 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from .airplane import Airplane6DoFLite
 from .controllers import PIDFollower
 from .params import Params
-from .simulation import Airplane6DoFLite
 from .visualization import AircraftVisual
 
 # Type alias for follower specification: (label, color, offset_position)

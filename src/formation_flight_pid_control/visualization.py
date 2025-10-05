@@ -13,8 +13,8 @@ from .geometry import (
 )
 
 if TYPE_CHECKING:  # pragma: no cover - imports for type checking only
+    from .airplane import Airplane6DoFLite
     from .controllers import PIDFollower
-    from .simulation import Airplane6DoFLite
 
 
 MAX_TRAIL_LENGTH = 500
