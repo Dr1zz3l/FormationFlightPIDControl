@@ -45,6 +45,7 @@ class AircraftVisual:
     throttle_history: List[float] = field(default_factory=list)
     line_handles: Dict[str, Any] = field(default_factory=dict)
     throttle_line: Optional[Any] = None
+    average_throttle_text: Optional[Any] = None
 
 
 def configure_figure():
@@ -100,12 +101,23 @@ def create_aircraft_lines(ax_3d, color: str) -> Dict[str, Any]:
 
 
 def attach_aircraft_lines(ax_3d, ax_throttle, formation: Sequence[AircraftVisual]) -> None:
-    for member in formation:
+    for index, member in enumerate(formation):
         member.line_handles = create_aircraft_lines(ax_3d, member.color)
         throttle_line, = ax_throttle.plot([], [], color=member.color, linewidth=1.5, label=member.label)
         member.throttle_line = throttle_line
+        text_y = 0.93 - index * 0.08
+        member.average_throttle_text = ax_throttle.text(
+            0.98,
+            text_y,
+            f"{member.label}: avg throttle --",
+            transform=ax_throttle.transAxes,
+            ha="right",
+            va="top",
+            color=member.color,
+            fontsize=9,
+        )
 
-    ax_throttle.legend(loc="upper right")
+    ax_throttle.legend(loc="upper left")
 
 
 def collect_line_artists(formation: Sequence[AircraftVisual]) -> list[Any]:
@@ -184,3 +196,13 @@ def update_throttle_plot(ax, time_history: Sequence[float], formation: Sequence[
     for member in formation:
         if member.throttle_line is not None:
             member.throttle_line.set_data(times, member.throttle_history)
+        if member.average_throttle_text is not None:
+            if member.throttle_history:
+                avg_throttle = float(np.mean(member.throttle_history))
+                member.average_throttle_text.set_text(
+                    f"{member.label}: avg throttle {avg_throttle:.2f}"
+                )
+            else:
+                member.average_throttle_text.set_text(
+                    f"{member.label}: avg throttle --"
+                )
