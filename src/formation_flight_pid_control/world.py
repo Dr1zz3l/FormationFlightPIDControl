@@ -165,8 +165,12 @@ class World:
             dF_body, dM_body = wake_forces_moments_on_follower(aircraft.sim, others, 
                                                                r_core=2.0, lam_decay=200.0)
             
-            if i == 1:  
-                print("Leader wake forces:", dF_body, dM_body, end="\r", flush=True)
+            if i == 2:  
+                print("wake forces:", dF_body, dM_body, "                    ", end="\r", flush=True)
+            
+            #!!! for testing purposes only
+            # dF_body, dM_body = np.zeros(3), np.zeros(3)
+
 
             # Apply control based on aircraft role
             if i == 0:  # Leader
@@ -181,6 +185,11 @@ class World:
             
             # Step with wake forces as external forces
             aircraft.sim.step(u_cmd, dt, ext_F_body=dF_body, ext_M_body=dM_body)
+
+            #!!! for testing purposes only
+            #subract position of leader from plane so they stay in view
+            #aircraft.sim.state.position -= self.formation[0].sim.state.position
+
             aircraft.throttle_history.append(u_cmd[0])
 
         self.t += dt

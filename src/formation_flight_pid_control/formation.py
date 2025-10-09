@@ -45,13 +45,17 @@ def build_formation(
         sim=Airplane6DoFLite(aircraft_params),
         label=leader_label,
         color=leader_color,
+        is_leader=True,
     )
+    print(dir(leader.sim.state.position))
 
     formation = [leader]
     for label, color, offset in follower_specs:
         sim = Airplane6DoFLite(aircraft_params)
         # Update the position using the new AirplaneState structure
+        print(sim.state.position, offset)
         sim.state.position += offset
+        print(sim.state.position)
         formation.append(
             AircraftVisual(sim=sim, label=label, color=color, pid=PIDFollower())
         )

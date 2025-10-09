@@ -18,6 +18,20 @@ if TYPE_CHECKING:  # pragma: no cover - imports for type checking only
 
 
 MAX_TRAIL_LENGTH = 500
+VORTEX_HISTORY_LENGTH = 32
+VORTEX_CIRCLE_POINTS = 24
+VORTEX_RING_SPACING = 25.0
+VORTEX_PHASE_STEP = 0.35
+
+
+@dataclass
+class VortexRing:
+    center: np.ndarray
+    basis_u: np.ndarray
+    basis_v: np.ndarray
+    radius: float
+    strength: float
+    phase: float
 
 
 @dataclass
@@ -41,11 +55,21 @@ class AircraftVisual:
     label: str
     color: str
     pid: Optional["PIDFollower"] = None
+    is_leader: bool = False
     trail: Trail = field(default_factory=Trail)
     throttle_history: List[float] = field(default_factory=list)
     line_handles: Dict[str, Any] = field(default_factory=dict)
     throttle_line: Optional[Any] = None
     average_throttle_text: Optional[Any] = None
+    vortex_history_left: Deque[VortexRing] = field(
+        default_factory=lambda: deque(maxlen=VORTEX_HISTORY_LENGTH)
+    )
+    vortex_history_right: Deque[VortexRing] = field(
+        default_factory=lambda: deque(maxlen=VORTEX_HISTORY_LENGTH)
+    )
+    vortex_lines_left: List[Any] = field(default_factory=list)
+    vortex_lines_right: List[Any] = field(default_factory=list)
+    vortex_phase: float = 0.0
 
 
 def configure_figure():
@@ -116,6 +140,15 @@ def attach_aircraft_lines(ax_3d, ax_throttle, formation: Sequence[AircraftVisual
             color=member.color,
             fontsize=9,
         )
+        if member.is_leader:
+            member.vortex_lines_left = [
+                ax_3d.plot([], [], [], color=member.color, linewidth=1.2, alpha=0.0)[0]
+                for _ in range(VORTEX_HISTORY_LENGTH)
+            ]
+            member.vortex_lines_right = [
+                ax_3d.plot([], [], [], color=member.color, linewidth=1.2, alpha=0.0)[0]
+                for _ in range(VORTEX_HISTORY_LENGTH)
+            ]
 
     ax_throttle.legend(loc="upper left")
 
@@ -126,6 +159,10 @@ def collect_line_artists(formation: Sequence[AircraftVisual]) -> list[Any]:
         artists.extend(member.line_handles.values())
         if member.throttle_line is not None:
             artists.append(member.throttle_line)
+        if member.vortex_lines_left:
+            artists.extend(member.vortex_lines_left)
+        if member.vortex_lines_right:
+            artists.extend(member.vortex_lines_right)
     return artists
 
 
@@ -180,6 +217,113 @@ def update_aircraft_visual(member: AircraftVisual) -> None:
     trail_line = member.line_handles["trail"]
     trail_line.set_data(trail_x, trail_y)
     trail_line.set_3d_properties(trail_z)
+
+    if member.is_leader:
+        update_leader_vortex(member, points)
+
+
+def _ring_points(ring: VortexRing) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    angles = np.linspace(0.0, 2.0 * np.pi, VORTEX_CIRCLE_POINTS, endpoint=True) + ring.phase
+    circle = ring.center + ring.radius * (
+        np.outer(np.cos(angles), ring.basis_u) + np.outer(np.sin(angles), ring.basis_v)
+    )
+    return circle[:, 0], circle[:, 1], circle[:, 2]
+
+
+def _compute_vortex_basis(direction: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    dir_unit = direction / max(float(np.linalg.norm(direction)), 1e-6)
+    up_candidate = np.array([0.0, 0.0, 1.0])
+    if abs(np.dot(dir_unit, up_candidate)) > 0.9:
+        up_candidate = np.array([0.0, 1.0, 0.0])
+    basis_u = np.cross(dir_unit, up_candidate)
+    basis_u_norm = np.linalg.norm(basis_u)
+    if basis_u_norm < 1e-6:
+        basis_u = np.array([0.0, 1.0, 0.0])
+        basis_u_norm = 1.0
+    basis_u = basis_u / basis_u_norm
+    basis_v = np.cross(dir_unit, basis_u)
+    basis_v_norm = np.linalg.norm(basis_v)
+    if basis_v_norm < 1e-6:
+        basis_v = np.array([0.0, 0.0, 1.0])
+        basis_v_norm = 1.0
+    basis_v = basis_v / basis_v_norm
+    return dir_unit, basis_u, basis_v
+
+
+def update_leader_vortex(member: AircraftVisual, points: Dict[str, np.ndarray]) -> None:
+    if not member.vortex_lines_left or not member.vortex_lines_right:
+        return
+
+    velocity_enu = NED_TO_ENU @ member.sim.state.velocity
+    direction = velocity_enu
+    if np.linalg.norm(direction) < 1e-3:
+        direction = points["nose"] - points["center"]
+    dir_unit, basis_u, basis_v = _compute_vortex_basis(direction)
+
+    throttle = member.throttle_history[-1] if member.throttle_history else 0.0
+    throttle = float(np.clip(throttle, 0.0, 1.0))
+
+    radius = 4.0 + 10.0 * throttle
+    spacing = VORTEX_RING_SPACING * (0.8 + 0.4 * (1.0 - throttle))
+
+    for ring in member.vortex_history_left:
+        ring.phase += VORTEX_PHASE_STEP
+        ring.radius *= 0.995
+        ring.strength *= 0.99
+    for ring in member.vortex_history_right:
+        ring.phase -= VORTEX_PHASE_STEP
+        ring.radius *= 0.995
+        ring.strength *= 0.99
+
+    center_left = (points["wing_l"] - dir_unit * spacing).copy()
+    center_right = (points["wing_r"] - dir_unit * spacing).copy()
+
+    member.vortex_history_left.append(
+        VortexRing(
+            center=center_left,
+            basis_u=basis_u.copy(),
+            basis_v=basis_v.copy(),
+            radius=radius,
+            strength=throttle,
+            phase=0.0,
+        )
+    )
+
+    member.vortex_history_right.append(
+        VortexRing(
+            center=center_right,
+            basis_u=basis_u.copy(),
+            basis_v=-basis_v.copy(),
+            radius=radius,
+            strength=throttle,
+            phase=0.0,
+        )
+    )
+
+    _update_vortex_lines(member.vortex_history_left, member.vortex_lines_left)
+    _update_vortex_lines(member.vortex_history_right, member.vortex_lines_right)
+
+
+def _update_vortex_lines(
+    history: Deque[VortexRing],
+    lines: Sequence[Any],
+) -> None:
+    rings = list(history)
+    count = len(rings)
+    for idx, line in enumerate(lines):
+        if idx < count:
+            ring = rings[count - 1 - idx]
+            x, y, z = _ring_points(ring)
+            line.set_data(x, y)
+            line.set_3d_properties(z)
+            fade = 1.0 - (idx / max(count - 1, 1)) * 0.8
+            base_alpha = ring.strength
+            alpha = float(np.clip(base_alpha * fade, 0.0, 1.0))
+            line.set_alpha(alpha)
+        else:
+            line.set_data([], [])
+            line.set_3d_properties([])
+            line.set_alpha(0.0)
 
 
 def update_throttle_plot(ax, time_history: Sequence[float], formation: Sequence[AircraftVisual]) -> None:
